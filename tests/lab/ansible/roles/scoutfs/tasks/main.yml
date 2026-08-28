@@ -1,0 +1,119 @@
+---
+- name: Install ScoutFS build dependencies for the active kernel
+  ansible.builtin.dnf:
+    name:
+      - elfutils-libelf-devel
+      - gcc
+      - git
+      - "kernel-devel-{{ ansible_facts['kernel'] }}"
+      - libblkid-devel
+      - libuuid-devel
+      - make
+      - openssl-devel
+      - sparse
+    state: present
+    lock_timeout: 300
+
+- name: Check out the pinned ScoutFS source
+  ansible.builtin.git:
+    repo: https://github.com/versity/scoutfs.git
+    dest: "{{ scoutfs_source_path }}"
+    version: "{{ scoutfs_source_version }}"
+    depth: 1
+    force: false
+
+- name: Build the ScoutFS kernel module
+  ansible.builtin.command:
+    argv: [make, -C, "{{ scoutfs_source_path }}/kmod", module]
+    creates: "{{ scoutfs_source_path }}/kmod/src/scoutfs.ko"
+
+- name: Install the ScoutFS kernel module
+  ansible.builtin.command:
+    argv: [make, -C, "{{ scoutfs_source_path }}/kmod", modules_install]
+    creates: "/lib/modules/{{ ansible_facts['kernel'] }}/extra/scoutfs.ko"
+  notify: Refresh kernel module dependencies
+
+- name: Apply module dependency changes before loading ScoutFS
+  ansible.builtin.meta: flush_handlers
+
+- name: Load the ScoutFS kernel module
+  ansible.builtin.command:
+    argv: [modprobe, scoutfs]
+  changed_when: false
+
+- name: Build the ScoutFS userspace utility
+  ansible.builtin.command:
+    argv: [make, -C, "{{ scoutfs_source_path }}/utils"]
+    creates: "{{ scoutfs_source_path }}/utils/src/scoutfs"
+
+- name: Install the ScoutFS userspace utility
+  ansible.builtin.copy:
+    src: "{{ scoutfs_source_path }}/utils/src/scoutfs"
+    dest: /usr/sbin/scoutfs
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+
+- name: Create the lab state directory on the initializer
+  ansible.builtin.file:
+    path: /var/lib/versitygw-lab
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  delegate_to: node-a
+  run_once: true
+
+- name: Check whether this lab initialized ScoutFS
+  ansible.builtin.stat:
+    path: /var/lib/versitygw-lab/scoutfs-created
+  delegate_to: node-a
+  run_once: true
+  register: scoutfs_created_marker
+
+- name: Initialize ScoutFS once without force
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scoutfs
+      - mkfs
+      - "{{ scoutfs_meta_device }}"
+      - "{{ scoutfs_data_device }}"
+      - -Q
+      - "0,{{ hostvars['node-a'].ansible_host }},{{ scoutfs_port }}"
+      - -Q
+      - "1,{{ hostvars['node-b'].ansible_host }},{{ scoutfs_port }}"
+      - -Q
+      - "2,{{ hostvars['node-c'].ansible_host }},{{ scoutfs_port }}"
+  delegate_to: node-a
+  run_once: true
+  when: not scoutfs_created_marker.stat.exists
+  changed_when: true
+
+- name: Create ScoutFS initialization marker
+  ansible.builtin.file:
+    path: /var/lib/versitygw-lab/scoutfs-created
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+  delegate_to: node-a
+  run_once: true
+  when: not scoutfs_created_marker.stat.exists
+
+- name: Mount ScoutFS with a unique quorum slot
+  ansible.posix.mount:
+    path: "{{ scoutfs_mount_path }}"
+    src: "{{ scoutfs_data_device }}"
+    fstype: scoutfs
+    opts: >-
+      _netdev,metadev_path={{ scoutfs_meta_device }},quorum_slot_nr={{ scoutfs_quorum_slot }}
+    state: mounted
+
+- name: Create the isolated ScoutFS lock-test directory
+  ansible.builtin.file:
+    path: "{{ scoutfs_mount_path }}/{{ lock_test_directory_name }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"

@@ -1,0 +1,35 @@
+---
+all:
+  vars:
+    ansible_user: "@@SSH_USER@@"
+    ansible_ssh_private_key_file: "@@SSH_KEY@@"
+    ansible_ssh_common_args: >-
+      -o IdentitiesOnly=yes
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile=@@KNOWN_HOSTS@@
+    lab_storage_ip: "@@STORAGE_IP@@"
+    lab_client_cidr: "@@CLIENT_CIDR@@"
+    lockprobe_local_path: "@@LOCKPROBE@@"
+    lab_node_ips:
+      - "@@NODE_A_IP@@"
+      - "@@NODE_B_IP@@"
+      - "@@NODE_C_IP@@"
+  children:
+    storage_servers:
+      hosts:
+        storage:
+          ansible_host: "@@STORAGE_IP@@"
+    cluster_nodes:
+      hosts:
+        node-a:
+          ansible_host: "@@NODE_A_IP@@"
+          iscsi_initiator_name: "iqn.2026-08.io.freefair.versitygw:node-a"
+          scoutfs_quorum_slot: 0
+        node-b:
+          ansible_host: "@@NODE_B_IP@@"
+          iscsi_initiator_name: "iqn.2026-08.io.freefair.versitygw:node-b"
+          scoutfs_quorum_slot: 1
+        node-c:
+          ansible_host: "@@NODE_C_IP@@"
+          iscsi_initiator_name: "iqn.2026-08.io.freefair.versitygw:node-c"
+          scoutfs_quorum_slot: 2

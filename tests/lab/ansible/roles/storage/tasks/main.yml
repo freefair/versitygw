@@ -1,0 +1,176 @@
+---
+- name: Install storage packages
+  ansible.builtin.dnf:
+    name:
+      - nfs-utils
+      - targetcli
+      - xfsprogs
+    state: present
+    lock_timeout: 300
+
+- name: Verify dedicated storage devices exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ storage_nfs_device }}"
+    - "{{ storage_scoutfs_meta_device }}"
+    - "{{ storage_scoutfs_data_device }}"
+  register: storage_device_stats
+
+- name: Require all dedicated storage devices
+  ansible.builtin.assert:
+    that: storage_device_stats.results | map(attribute='stat.exists') | min
+    fail_msg: A dedicated lab storage device is missing; refusing to format or export disks.
+
+- name: Read NFS device filesystem type
+  ansible.builtin.command:
+    argv: [blkid, -s, TYPE, -o, value, "{{ storage_nfs_device }}"]
+  register: storage_nfs_type
+  changed_when: false
+  failed_when: storage_nfs_type.rc not in [0, 2]
+
+- name: Require an empty or existing XFS NFS device
+  ansible.builtin.assert:
+    that:
+      - storage_nfs_type.stdout in ['', 'xfs']
+      - nfs_filesystem_label | length <= 12
+    fail_msg: The NFS device contains an unexpected filesystem; refusing to overwrite it.
+
+- name: Create the NFS XFS filesystem once
+  ansible.builtin.command:
+    argv: [mkfs.xfs, -L, "{{ nfs_filesystem_label }}", "{{ storage_nfs_device }}"]
+  when: storage_nfs_type.stdout == ''
+  changed_when: true
+
+- name: Mount the NFS backing filesystem
+  ansible.posix.mount:
+    path: "{{ nfs_export_path }}"
+    src: "LABEL={{ nfs_filesystem_label }}"
+    fstype: xfs
+    opts: defaults
+    state: mounted
+
+- name: Create the isolated NFS lock-test directory
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}/{{ lock_test_directory_name }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+
+- name: Install the restricted NFS export
+  ansible.builtin.template:
+    src: exports.j2
+    dest: /etc/exports.d/versitygw-lab.exports
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload NFS exports
+
+- name: Enable the NFS server
+  ansible.builtin.systemd_service:
+    name: nfs-server.service
+    enabled: true
+    state: started
+
+- name: Permit NFS services from the lab network
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="ipv4" source address="{{ lab_client_cidr }}"
+      service name="{{ item }}" accept
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - nfs
+    - mountd
+    - rpc-bind
+
+- name: Inspect configured iSCSI block backstores
+  ansible.builtin.command:
+    argv: [targetcli, ls, /backstores/block, "1"]
+  register: storage_target_backstores
+  changed_when: false
+
+- name: Create ScoutFS iSCSI block backstores
+  ansible.builtin.command:
+    argv:
+      - targetcli
+      - /backstores/block
+      - create
+      - "name={{ item.name }}"
+      - "dev={{ item.device }}"
+  loop:
+    - { name: scoutfs-meta, device: "{{ storage_scoutfs_meta_device }}" }
+    - { name: scoutfs-data, device: "{{ storage_scoutfs_data_device }}" }
+  when: item.name not in storage_target_backstores.stdout
+  changed_when: true
+
+- name: Inspect configured iSCSI targets
+  ansible.builtin.command:
+    argv: [targetcli, ls, /iscsi, "1"]
+  register: storage_targets
+  changed_when: false
+
+- name: Create the ScoutFS iSCSI target
+  ansible.builtin.command:
+    argv: [targetcli, /iscsi, create, "{{ scoutfs_target_iqn }}"]
+  when: scoutfs_target_iqn not in storage_targets.stdout
+  changed_when: true
+
+- name: Inspect configured ScoutFS LUNs
+  ansible.builtin.command:
+    argv: [targetcli, ls, "/iscsi/{{ scoutfs_target_iqn }}/tpg1/luns", "1"]
+  register: storage_target_luns
+  changed_when: false
+
+- name: Attach ScoutFS backstores as stable LUNs
+  ansible.builtin.command:
+    argv:
+      - targetcli
+      - "/iscsi/{{ scoutfs_target_iqn }}/tpg1/luns"
+      - create
+      - "/backstores/block/{{ item.name }}"
+      - "lun={{ item.lun }}"
+  loop:
+    - { name: scoutfs-meta, lun: 0 }
+    - { name: scoutfs-data, lun: 1 }
+  when: "('lun' ~ (item.lun | string)) not in storage_target_luns.stdout"
+  changed_when: true
+
+- name: Inspect configured iSCSI initiator ACLs
+  ansible.builtin.command:
+    argv: [targetcli, ls, "/iscsi/{{ scoutfs_target_iqn }}/tpg1/acls", "1"]
+  register: storage_target_acls
+  changed_when: false
+
+- name: Permit only the three lab initiators
+  ansible.builtin.command:
+    argv:
+      - targetcli
+      - "/iscsi/{{ scoutfs_target_iqn }}/tpg1/acls"
+      - create
+      - "{{ hostvars[item].iscsi_initiator_name }}"
+  loop: "{{ groups.cluster_nodes }}"
+  when: hostvars[item].iscsi_initiator_name not in storage_target_acls.stdout
+  changed_when: true
+
+- name: Persist the iSCSI target configuration
+  ansible.builtin.command:
+    argv: [targetcli, saveconfig]
+  changed_when: false
+
+- name: Enable the iSCSI target service
+  ansible.builtin.systemd_service:
+    name: target.service
+    enabled: true
+    state: started
+
+- name: Permit iSCSI from the lab network
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="ipv4" source address="{{ lab_client_cidr }}"
+      port port="3260" protocol="tcp" accept
+    permanent: true
+    immediate: true
+    state: enabled

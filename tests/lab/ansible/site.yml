@@ -1,0 +1,28 @@
+---
+- name: Bootstrap lab hosts
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - role: common
+
+- name: Configure NFS and iSCSI storage
+  hosts: storage_servers
+  become: true
+  gather_facts: true
+  roles:
+    - role: storage
+
+- name: Configure shared-storage clients
+  hosts: cluster_nodes
+  become: true
+  gather_facts: true
+  roles:
+    - role: cluster
+
+- name: Build and mount ScoutFS
+  hosts: cluster_nodes
+  become: true
+  gather_facts: true
+  roles:
+    - role: scoutfs

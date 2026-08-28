@@ -1,0 +1,98 @@
+---
+- name: Install shared-storage client packages
+  ansible.builtin.dnf:
+    name:
+      - iscsi-initiator-utils
+      - nfs-utils
+    state: present
+    lock_timeout: 300
+
+- name: Configure deterministic iSCSI initiator identity
+  ansible.builtin.template:
+    src: initiatorname.j2
+    dest: /etc/iscsi/initiatorname.iscsi
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart iSCSI initiator
+
+- name: Apply iSCSI initiator identity before discovery
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the iSCSI initiator service
+  ansible.builtin.systemd_service:
+    name: iscsid.service
+    enabled: true
+    state: started
+
+- name: Discover the ScoutFS iSCSI target
+  ansible.builtin.command:
+    argv: [iscsiadm, -m, discovery, -t, sendtargets, -p, "{{ lab_storage_ip }}:3260"]
+  changed_when: false
+
+- name: Configure automatic iSCSI login
+  ansible.builtin.command:
+    argv:
+      - iscsiadm
+      - -m
+      - node
+      - -T
+      - "{{ scoutfs_target_iqn }}"
+      - -p
+      - "{{ lab_storage_ip }}:3260"
+      - --op
+      - update
+      - -n
+      - node.startup
+      - -v
+      - automatic
+  changed_when: false
+
+- name: Inspect active iSCSI sessions
+  ansible.builtin.command:
+    argv: [iscsiadm, -m, session]
+  register: cluster_iscsi_sessions
+  changed_when: false
+  failed_when: cluster_iscsi_sessions.rc not in [0, 21]
+
+- name: Log in to the ScoutFS iSCSI target
+  ansible.builtin.command:
+    argv:
+      - iscsiadm
+      - -m
+      - node
+      - -T
+      - "{{ scoutfs_target_iqn }}"
+      - -p
+      - "{{ lab_storage_ip }}:3260"
+      - --login
+  when: scoutfs_target_iqn not in cluster_iscsi_sessions.stdout
+  changed_when: true
+
+- name: Wait for ScoutFS shared block devices
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    timeout: 30
+  loop:
+    - "{{ scoutfs_meta_device }}"
+    - "{{ scoutfs_data_device }}"
+
+- name: Mount the NFS test filesystem with network locking
+  ansible.posix.mount:
+    path: "{{ nfs_mount_path }}"
+    src: "{{ lab_storage_ip }}:{{ nfs_export_path }}"
+    fstype: nfs4
+    opts: vers=4.2,hard,proto=tcp,local_lock=none,_netdev
+    state: mounted
+
+- name: Permit ScoutFS cluster traffic from the lab network
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="ipv4" source address="{{ lab_client_cidr }}"
+      port port="{{ scoutfs_port }}" protocol="{{ item }}" accept
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - tcp
+    - udp

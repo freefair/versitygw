@@ -1,0 +1,5 @@
+---
+- name: Refresh kernel module dependencies
+  ansible.builtin.command:
+    argv: [depmod, -a]
+  changed_when: true

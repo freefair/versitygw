@@ -1,0 +1,26 @@
+---
+- name: Verify lab services and mounts
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify NFS mount on cluster nodes
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --target, "{{ nfs_mount_path }}"]
+      changed_when: false
+      when: inventory_hostname in groups.cluster_nodes
+
+    - name: Verify ScoutFS mount on cluster nodes
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --target, "{{ scoutfs_mount_path }}"]
+      changed_when: false
+      when: inventory_hostname in groups.cluster_nodes
+
+    - name: Verify storage services
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ item }}"]
+      loop:
+        - nfs-server.service
+        - target.service
+      changed_when: false
+      when: inventory_hostname in groups.storage_servers

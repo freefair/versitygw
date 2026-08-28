@@ -1,0 +1,45 @@
+---
+- name: Wait for image cloud-init completion
+  ansible.builtin.command:
+    argv: [cloud-init, status, --wait]
+  changed_when: false
+
+- name: Check whether the updated kernel requires a reboot
+  ansible.builtin.command:
+    argv: [dnf, needs-restarting, -r]
+  register: common_reboot_check
+  changed_when: false
+  failed_when: common_reboot_check.rc not in [0, 1]
+
+- name: Reboot into the updated kernel
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+  when: common_reboot_check.rc == 1
+
+- name: Refresh facts after a possible reboot
+  ansible.builtin.setup:
+
+- name: Install common lab packages
+  ansible.builtin.dnf:
+    name:
+      - firewalld
+      - qemu-guest-agent
+    state: present
+    lock_timeout: 300
+
+- name: Enable common lab services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - firewalld.service
+    - qemu-guest-agent.service
+
+- name: Install the cross-node record-lock probe
+  ansible.builtin.copy:
+    src: "{{ lockprobe_local_path }}"
+    dest: /usr/local/bin/versitygw-lockprobe
+    owner: root
+    group: root
+    mode: "0755"

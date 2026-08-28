@@ -1,0 +1,17 @@
+---
+nfs_mount_path: /mnt/nfs
+nfs_export_path: /srv/versitygw-nfs
+nfs_filesystem_label: vgw-lab-nfs
+lock_test_directory_name: .versitygw-locks
+scoutfs_mount_path: /mnt/scoutfs
+scoutfs_source_version: v1.33
+scoutfs_source_path: /usr/local/src/scoutfs
+scoutfs_target_iqn: iqn.2026-08.io.freefair.versitygw:scoutfs
+scoutfs_port: 53000
+storage_nfs_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_NFSDATA
+storage_scoutfs_meta_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_SCOUTFSMETA
+storage_scoutfs_data_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_SCOUTFSDATA
+scoutfs_meta_device: >-
+  /dev/disk/by-path/ip-{{ lab_storage_ip }}:3260-iscsi-{{ scoutfs_target_iqn }}-lun-0
+scoutfs_data_device: >-
+  /dev/disk/by-path/ip-{{ lab_storage_ip }}:3260-iscsi-{{ scoutfs_target_iqn }}-lun-1
