@@ -60,7 +60,7 @@ The absence of replication support must be documented because Amazon S3 suppress
 | --- | --- | --- |
 | Never versioned | Current expiration | Permanently delete the object |
 | Versioning enabled | Current expiration | Create a new delete marker and make the prior version noncurrent |
-| Versioning suspended | Current expiration | Create or replace the null-version delete marker according to S3 semantics |
+| Versioning suspended | Current expiration | Apply the concrete null-version rules below |
 | Versioning enabled or suspended | Noncurrent expiration | Permanently delete only eligible noncurrent versions |
 | Any state | Expired delete marker | Remove a current delete marker only when no noncurrent versions remain |
 | Any state | Multipart abort | Abort eligible incomplete uploads without affecting completed objects |
@@ -77,6 +77,19 @@ An object or version receives at most one effective Lifecycle action per evaluat
 Permanent deletion takes precedence over transition.
 
 Transition takes precedence over creation of a delete marker.
+
+### Versioning-Suspended Expiration Rules
+
+The pure evaluator and conditional mutation API use the following table. The rule is based on the AWS [Lifecycle configuration elements](https://docs.aws.amazon.com/AmazonS3/latest/userguide/intro-lifecycle-rules.html) description that a suspended bucket creates a `null` delete marker which replaces a `null` object version.
+
+| Current state in a suspended bucket | Expiration result |
+| --- | --- |
+| Current data version has version ID `null` | Permanently delete that null data version, then create a current delete marker whose version ID is `null` |
+| Current data version has a non-null version ID | Retain it as a noncurrent version and create a current delete marker whose version ID is `null` |
+| Current version is a delete marker and one or more noncurrent versions exist | Take no action; do not replace the existing null delete marker |
+| The current version is the only version and is a delete marker | Remove that expired delete marker; do not create a replacement |
+
+The mutation is conditional on the evaluated current version ID and delete-marker state. A concurrent overwrite or delete makes the candidate stale instead of applying the table to a new version graph.
 
 ## Options Considered
 
@@ -376,7 +389,13 @@ Only one gateway instance may evaluate a bucket at a time.
 
 The coordinator assigns each process a random instance ID and obtains a per-bucket backend lease.
 
-POSIX and ScoutFS use a lock file on the shared backend filesystem and document the filesystem locking requirement.
+Generic POSIX uses a hidden per-bucket lock file and a whole-file POSIX record lock acquired with `fcntl(F_SETLK)` byte-range locking (`l_start=0`, `l_len=0`, exclusive write lock). The implementation does not use BSD `flock`, directory creation, timestamps, or a best-effort PID file as a distributed lease.
+
+The POSIX coordinator fails closed. `ENOLCK`, `EOPNOTSUPP`, `EINVAL`, an unavailable lock syscall, or a startup contention self-test that allows a second process to acquire the lock prevents destructive Lifecycle execution. An unsupported shared filesystem is not allowed to fall back to single-instance assumptions.
+
+The generic POSIX strategy is verified for local Linux filesystems and NFSv4.2 mounted with `hard,proto=tcp,local_lock=none`. Other network filesystems remain unsupported until the same cross-node contention and process-loss suite passes.
+
+ScoutFS v1.33 is an explicit backend exception: cross-node `fcntl` record locks were measured as non-coordinating, so the generic POSIX lease is forbidden there. A ScoutFS coordinator may run only on the mount whose matching `/sys/fs/scoutfs/f.<fsid>.r.<rid>/quorum/is_leader` value is exactly `1`. A local `fcntl` lock on that leader mount serializes multiple gateway processes on the same node. The coordinator rechecks leader state before every mutation and cancels immediately when leadership is lost. Missing, unreadable, zero, or ambiguous matching leader state refuses execution rather than degrading to best effort.
 
 Azure uses Blob leases.
 
@@ -503,6 +522,9 @@ The exact split may be refined during the failing-test prototype, but these owne
 - Object Lock skip behavior.
 - Backend capability rejection.
 - Lease acquisition, loss, and cancellation.
+- Suspended-versioning cases for a null data version, a non-null current version, an existing null delete marker with older versions, and a lone expired delete marker.
+- Generic POSIX `fcntl` fail-closed behavior for unsupported syscalls and filesystems.
+- ScoutFS leader-state parsing, same-node lock contention, leadership loss, missing sysfs state, and ambiguous mount matches.
 - Archive transition failure at every atomic step.
 
 ### Integration Tests
@@ -517,6 +539,8 @@ The exact split may be refined during the failing-test prototype, but these owne
 - Transition, `InvalidObjectState`, restore, and restore expiry.
 - Restart during a scan and restart during transition.
 - Two gateway instances contend for the same bucket without duplicate action.
+- NFSv4.2 cross-node `fcntl` contention, holder-process termination, gateway restart, NFS server restart, and network partition recovery.
+- ScoutFS v1.33 rejects the generic cross-node lock path, runs only on the elected leader, serializes co-located processes, and stops mutations during leader transition.
 - S3Proxy delegates without running a second executor.
 
 ### Differential Tests
@@ -573,7 +597,7 @@ Lifecycle scans are proportional to object and version count unless a future bac
 
 Tag filters may require one metadata read per prefix/size-matched candidate.
 
-Multi-instance correctness depends on backend lock semantics and must be verified on every supported shared filesystem.
+Multi-instance correctness depends on backend coordination semantics and must be verified on every supported shared filesystem. NFS uses the verified `fcntl` contract; ScoutFS uses its elected leader plus a same-node `fcntl` lock and never claims cluster-wide POSIX record locking.
 
 Transition and Encryption must compose without decrypting and re-encrypting merely to move an archived POSIX payload.
 
@@ -584,3 +608,6 @@ Transition and Encryption must compose without decrypting and re-encrypting mere
 - [Amazon S3 PutBucketLifecycleConfiguration](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycleConfiguration.html)
 - [Amazon S3 GetBucketLifecycleConfiguration](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketLifecycleConfiguration.html)
 - [Amazon S3 DeleteBucketLifecycle](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteBucketLifecycle.html)
+- [Linux fcntl byte-range locking](https://man7.org/linux/man-pages/man2/fcntl_locking.2.html)
+- [Linux NFS mount options](https://man7.org/linux/man-pages/man5/nfs.5.html)
+- [ScoutFS source and sysfs interfaces](https://github.com/versity/scoutfs)

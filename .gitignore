@@ -74,3 +74,16 @@ metrics-exploration/grafana_data/**
 # bats tools
 /tests/bats-assert
 /tests/bats-support
+
+# generated Claude knowledge mirrors
+/.claude/rules/
+
+# local Terraform state and generated lab data
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+/tests/lab/.local/
+
+# Claude session-local files (rules mirrors, task notes)
+/.claude/

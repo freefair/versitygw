@@ -132,7 +132,7 @@ Azure currently reports `STANDARD` and does not expose Azure access-tier state a
 
 `PutBucketLifecycleConfiguration_not_implemented` calls `PutBucketAnalyticsConfiguration` instead of the Lifecycle API.
 
-This is a test defect within the feature scope and must be corrected when the stub tests are replaced.
+This is a test defect within the feature scope and must be corrected when the stub tests are replaced. Consequently, the AWS SDK integration suite does not exercise the current Lifecycle PUT 501 response at all; only other test layers currently observe that stub.
 
 ## Encryption Inventory
 
@@ -170,7 +170,7 @@ The backend outputs and `s3response` models contain encryption response fields, 
 
 ### Security and Policy Handling
 
-The debug logger already redacts SSE-C customer key headers and has tests for both destination and copy-source keys.
+The top-level `debuglogger/redact.go` already redacts SSE-C customer key headers and has tests for both destination and copy-source keys. `debuglogger/logger.go` invokes that redaction boundary before logging request headers. Encryption work extends these files and tests; it must not create a second redaction site under `s3api/`.
 
 Bucket-policy validation explicitly omits `s3:x-amz-server-side-encryption` because the runtime does not currently read the header.
 

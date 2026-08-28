@@ -46,6 +46,12 @@ Keep up to date with latest gateway announcements by signing up to the [versityg
 ### Documentation
 See project [documentation](https://github.com/versity/versitygw/wiki) on the wiki.
 
+Implementation references for the Lifecycle and Encryption work in this repository:
+
+- [Lifecycle and Encryption inventory](docs/impl/s3-lifecycle-encryption-inventory.md)
+- [Amazon S3-compatible Lifecycle implementation plan](docs/impl/s3-lifecycle.md)
+- [Amazon S3-compatible Encryption implementation plan](docs/impl/s3-encryption.md)
+
 ### Need help?
 Ask questions in the [community discussions](https://github.com/versity/versitygw/discussions).
 <br>
