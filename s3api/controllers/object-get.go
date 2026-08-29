@@ -328,14 +328,24 @@ func (c S3ApiController) GetObjectAttributes(ctx fiber.Ctx) (*Response, error) {
 			},
 		}, err
 	}
+	readEncryption, err := c.parseReadCustomerEncryption(ctx, false)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if readEncryption != nil {
+		defer readEncryption.CustomerKey.Destroy()
+	}
 
 	res, err := c.be.GetObjectAttributes(ctx.RequestCtx(),
 		&s3.GetObjectAttributesInput{
-			Bucket:           &bucket,
-			Key:              &key,
-			PartNumberMarker: &partNumberMarker,
-			MaxParts:         maxParts,
-			VersionId:        &versionId,
+			Bucket:               &bucket,
+			Key:                  &key,
+			PartNumberMarker:     &partNumberMarker,
+			MaxParts:             maxParts,
+			VersionId:            &versionId,
+			SSECustomerAlgorithm: utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:       utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:    utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
 		})
 	if err != nil {
 		headers := map[string]*string{
@@ -469,18 +479,28 @@ func (c S3ApiController) GetObject(ctx fiber.Ctx) (*Response, error) {
 	}
 
 	conditionalHeaders := utils.ParsePreconditionHeaders(ctx)
+	readEncryption, err := c.parseReadCustomerEncryption(ctx, false)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if readEncryption != nil {
+		defer readEncryption.CustomerKey.Destroy()
+	}
 
 	res, err := c.be.GetObject(ctx.RequestCtx(), &s3.GetObjectInput{
-		Bucket:            &bucket,
-		Key:               &key,
-		Range:             &acceptRange,
-		IfMatch:           conditionalHeaders.IfMatch,
-		IfNoneMatch:       conditionalHeaders.IfNoneMatch,
-		IfModifiedSince:   conditionalHeaders.IfModSince,
-		IfUnmodifiedSince: conditionalHeaders.IfUnmodeSince,
-		VersionId:         &versionId,
-		ChecksumMode:      checksumMode,
-		PartNumber:        partNumber,
+		Bucket:               &bucket,
+		Key:                  &key,
+		Range:                &acceptRange,
+		IfMatch:              conditionalHeaders.IfMatch,
+		IfNoneMatch:          conditionalHeaders.IfNoneMatch,
+		IfModifiedSince:      conditionalHeaders.IfModSince,
+		IfUnmodifiedSince:    conditionalHeaders.IfUnmodeSince,
+		VersionId:            &versionId,
+		ChecksumMode:         checksumMode,
+		PartNumber:           partNumber,
+		SSECustomerAlgorithm: utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+		SSECustomerKey:       utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+		SSECustomerKeyMD5:    utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
 	})
 	if err != nil {
 		var headers map[string]*string
@@ -526,40 +546,44 @@ func (c S3ApiController) GetObject(ctx fiber.Ctx) (*Response, error) {
 		utils.StreamResponseBody(ctx, res.Body, contentLen)
 	}
 
+	headers := map[string]*string{
+		"ETag":                                res.ETag,
+		"x-amz-restore":                       res.Restore,
+		"accept-ranges":                       res.AcceptRanges,
+		"Content-Range":                       res.ContentRange,
+		"Content-Disposition":                 utils.ApplyOverride(res.ContentDisposition, responseOverrides["Content-Disposition"]),
+		"Content-Encoding":                    utils.ApplyOverride(res.ContentEncoding, responseOverrides["Content-Encoding"]),
+		"Content-Language":                    utils.ApplyOverride(res.ContentLanguage, responseOverrides["Content-Language"]),
+		"Cache-Control":                       utils.ApplyOverride(res.CacheControl, responseOverrides["Cache-Control"]),
+		"Expires":                             utils.ApplyOverride(res.ExpiresString, responseOverrides["Expires"]),
+		"x-amz-website-redirect-location":     res.WebsiteRedirectLocation,
+		"x-amz-checksum-crc32":                res.ChecksumCRC32,
+		"x-amz-checksum-crc64nvme":            res.ChecksumCRC64NVME,
+		"x-amz-checksum-crc32c":               res.ChecksumCRC32C,
+		"x-amz-checksum-sha1":                 res.ChecksumSHA1,
+		"x-amz-checksum-sha256":               res.ChecksumSHA256,
+		"x-amz-checksum-sha512":               res.ChecksumSHA512,
+		"x-amz-checksum-md5":                  res.ChecksumMD5,
+		"x-amz-checksum-xxhash64":             res.ChecksumXXHASH64,
+		"x-amz-checksum-xxhash3":              res.ChecksumXXHASH3,
+		"x-amz-checksum-xxhash128":            res.ChecksumXXHASH128,
+		"Content-Type":                        utils.ApplyOverride(res.ContentType, responseOverrides["Content-Type"]),
+		"x-amz-version-id":                    res.VersionId,
+		"Content-Length":                      utils.ConvertPtrToStringPtr(res.ContentLength),
+		"x-amz-mp-parts-count":                utils.ConvertPtrToStringPtr(res.PartsCount),
+		"x-amz-tagging-count":                 utils.ConvertPtrToStringPtr(res.TagCount),
+		"x-amz-object-lock-mode":              utils.ConvertToStringPtr(res.ObjectLockMode),
+		"x-amz-object-lock-legal-hold":        utils.ConvertToStringPtr(res.ObjectLockLegalHoldStatus),
+		"x-amz-storage-class":                 utils.ConvertToStringPtr(res.StorageClass),
+		"x-amz-checksum-type":                 utils.ConvertToStringPtr(res.ChecksumType),
+		"x-amz-object-lock-retain-until-date": utils.FormatDatePtrToString(res.ObjectLockRetainUntilDate, time.RFC3339),
+		"Last-Modified":                       utils.FormatDatePtrToString(res.LastModified, timefmt),
+	}
+	addObjectEncryptionHeaders(headers, res.ServerSideEncryption, res.SSEKMSKeyId,
+		res.SSECustomerAlgorithm, res.SSECustomerKeyMD5, res.BucketKeyEnabled)
+
 	return &Response{
-		Headers: map[string]*string{
-			"ETag":                                res.ETag,
-			"x-amz-restore":                       res.Restore,
-			"accept-ranges":                       res.AcceptRanges,
-			"Content-Range":                       res.ContentRange,
-			"Content-Disposition":                 utils.ApplyOverride(res.ContentDisposition, responseOverrides["Content-Disposition"]),
-			"Content-Encoding":                    utils.ApplyOverride(res.ContentEncoding, responseOverrides["Content-Encoding"]),
-			"Content-Language":                    utils.ApplyOverride(res.ContentLanguage, responseOverrides["Content-Language"]),
-			"Cache-Control":                       utils.ApplyOverride(res.CacheControl, responseOverrides["Cache-Control"]),
-			"Expires":                             utils.ApplyOverride(res.ExpiresString, responseOverrides["Expires"]),
-			"x-amz-website-redirect-location":     res.WebsiteRedirectLocation,
-			"x-amz-checksum-crc32":                res.ChecksumCRC32,
-			"x-amz-checksum-crc64nvme":            res.ChecksumCRC64NVME,
-			"x-amz-checksum-crc32c":               res.ChecksumCRC32C,
-			"x-amz-checksum-sha1":                 res.ChecksumSHA1,
-			"x-amz-checksum-sha256":               res.ChecksumSHA256,
-			"x-amz-checksum-sha512":               res.ChecksumSHA512,
-			"x-amz-checksum-md5":                  res.ChecksumMD5,
-			"x-amz-checksum-xxhash64":             res.ChecksumXXHASH64,
-			"x-amz-checksum-xxhash3":              res.ChecksumXXHASH3,
-			"x-amz-checksum-xxhash128":            res.ChecksumXXHASH128,
-			"Content-Type":                        utils.ApplyOverride(res.ContentType, responseOverrides["Content-Type"]),
-			"x-amz-version-id":                    res.VersionId,
-			"Content-Length":                      utils.ConvertPtrToStringPtr(res.ContentLength),
-			"x-amz-mp-parts-count":                utils.ConvertPtrToStringPtr(res.PartsCount),
-			"x-amz-tagging-count":                 utils.ConvertPtrToStringPtr(res.TagCount),
-			"x-amz-object-lock-mode":              utils.ConvertToStringPtr(res.ObjectLockMode),
-			"x-amz-object-lock-legal-hold":        utils.ConvertToStringPtr(res.ObjectLockLegalHoldStatus),
-			"x-amz-storage-class":                 utils.ConvertToStringPtr(res.StorageClass),
-			"x-amz-checksum-type":                 utils.ConvertToStringPtr(res.ChecksumType),
-			"x-amz-object-lock-retain-until-date": utils.FormatDatePtrToString(res.ObjectLockRetainUntilDate, time.RFC3339),
-			"Last-Modified":                       utils.FormatDatePtrToString(res.LastModified, timefmt),
-		},
+		Headers: headers,
 		MetaOpts: &MetaOptions{
 			ContentLength: utils.GetInt64(res.ContentLength),
 			BucketOwner:   parsedAcl.Owner,

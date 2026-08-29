@@ -34,6 +34,10 @@ mkdir /tmp/versioning.https.covdata
 rm -rf /tmp/noacl.covdata
 mkdir /tmp/noacl.covdata
 
+rm -rf /tmp/encryptiongw /tmp/encryptioniam /tmp/encryptionkeys /tmp/encryption.covdata /tmp/encryptionsidecar
+mkdir /tmp/encryptiongw /tmp/encryptioniam /tmp/encryptionkeys /tmp/encryption.covdata
+chmod 700 /tmp/encryptionkeys
+
 rm -rf /tmp/versioningdir
 mkdir /tmp/versioningdir
 
@@ -115,6 +119,33 @@ if ! ./versitygw test --allow-insecure -a user -s pass -e https://127.0.0.1:7071
 fi
 
 kill $GW_HTTPS_PID
+
+echo "Running encryption integration tests over https"
+./versitygw utils encryption-key generate --directory /tmp/encryptionkeys --key-id test-active --activate
+
+ENCRYPTION_SIDECAR_FLAG=""
+if $USE_SIDECAR; then
+	mkdir /tmp/encryptionsidecar
+	ENCRYPTION_SIDECAR_FLAG="--sidecar /tmp/encryptionsidecar"
+fi
+
+GOCOVERDIR=/tmp/encryption.covdata ./versitygw --cert "$PWD/cert.pem" --key "$PWD/key.pem" -p :7076 -a user -s pass --iam-dir /tmp/encryptioniam posix $ENCRYPTION_SIDECAR_FLAG --encryption-key-directory /tmp/encryptionkeys /tmp/encryptiongw &
+GW_ENCRYPTION_PID=$!
+
+sleep 1
+
+if ! kill -0 $GW_ENCRYPTION_PID; then
+	echo "encryption-enabled server no longer running"
+	exit 1
+fi
+
+if ! ./versitygw test --allow-insecure -a user -s pass -e https://127.0.0.1:7076 encryption; then
+	echo "encryption integration tests failed"
+	kill $GW_ENCRYPTION_PID
+	exit 1
+fi
+
+kill $GW_ENCRYPTION_PID
 
 ECHO "Running the sdk test over http against the versioning-enabled gateway"
 # run server in background versioning-enabled

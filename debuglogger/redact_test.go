@@ -73,6 +73,19 @@ func TestDebugRedactHonorsUnsafeLevel(t *testing.T) {
 	}
 }
 
+func TestDebugRedactNeverLogsSSECustomerKeys(t *testing.T) {
+	SetLevel(LevelUnsafe)
+	t.Cleanup(func() { SetLevel(LevelSilent) })
+	for _, header := range []string{
+		"x-amz-server-side-encryption-customer-key",
+		"x-amz-copy-source-server-side-encryption-customer-key",
+	} {
+		if got := debugRedact(header, "raw-key-material"); got != redactedValue {
+			t.Fatalf("debugRedact(%q) = %q, want redacted", header, got)
+		}
+	}
+}
+
 func TestRedactedQueryString(t *testing.T) {
 	args := &fasthttp.Args{}
 	args.Parse("Action=AssumeRoleWithWebIdentity&WebIdentityToken=super-secret-jwt")

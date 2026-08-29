@@ -15,6 +15,7 @@
 package s3event
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,6 +28,7 @@ import (
 
 type S3EventSender interface {
 	SendEvent(ctx fiber.Ctx, meta EventMeta)
+	SendBackgroundEvent(context.Context, BackgroundEventMeta)
 	Close() error
 }
 
@@ -36,6 +38,14 @@ type EventMeta struct {
 	ObjectSize  int64
 	ObjectETag  *string
 	VersionId   *string
+}
+
+type BackgroundEventMeta struct {
+	EventMeta
+	Region      string
+	Bucket      string
+	Key         string
+	PrincipalID string
 }
 
 type EventSchema struct {
@@ -200,6 +210,29 @@ func createEventSchema(ctx fiber.Ctx, meta EventMeta, configId ConfigurationId) 
 			},
 		},
 	}
+}
+
+func createBackgroundEventSchema(meta BackgroundEventMeta, configID ConfigurationId) EventSchema {
+	principal := meta.PrincipalID
+	if principal == "" {
+		principal = "versitygw:lifecycle"
+	}
+	return EventSchema{Records: []EventRecord{{
+		EventVersion: "2.2", EventSource: "aws:s3", AwsRegion: meta.Region,
+		EventTime: time.Now().UTC().Format(time.RFC3339), EventName: meta.EventName,
+		UserIdentity: EventUserIdentity{PrincipalId: principal},
+		S3: EventS3Data{
+			S3SchemaVersion: "1.0", ConfigurationId: configID,
+			Bucket: EventS3BucketData{
+				Name: meta.Bucket, OwnerIdentity: EventUserIdentity{PrincipalId: meta.BucketOwner},
+				Arn: "arn:aws:s3:::" + meta.Bucket,
+			},
+			Object: EventObjectData{
+				Key: meta.Key, Size: meta.ObjectSize, ETag: meta.ObjectETag,
+				VersionId: meta.VersionId, Sequencer: genSequencer(),
+			},
+		},
+	}}}
 }
 
 func generateTestEvent() ([]byte, error) {

@@ -16,6 +16,7 @@ package gwcli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend/azure"
@@ -68,6 +69,37 @@ func AzureCommand() *cli.Command {
 				EnvVars:     []string{"AZ_COPY_SAS_VERSION"},
 				Destination: &azCopySASVersion,
 			},
+			&cli.StringFlag{
+				Name:        "encryption-key-directory",
+				Usage:       "directory containing protected local encryption key files",
+				EnvVars:     []string{"VGW_ENCRYPTION_KEY_DIRECTORY"},
+				Destination: &encryptionKeyDir,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-active-key",
+				Usage:       "active local encryption key ID (defaults to the key directory's active file)",
+				EnvVars:     []string{"VGW_ENCRYPTION_ACTIVE_KEY"},
+				Destination: &encryptionActiveKey,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-kms-provider",
+				Usage:       "SSE-KMS provider: local or aws; AWS configuration is loaded only when aws is selected",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_PROVIDER"},
+				Destination: &encryptionKMSProvider,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-kms-key-id",
+				Usage:       "default AWS KMS key ID or alias",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_KEY_ID"},
+				Destination: &encryptionKMSKeyID,
+			},
+			&cli.DurationFlag{
+				Name:        "encryption-kms-timeout",
+				Usage:       "maximum duration of one AWS KMS operation",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_TIMEOUT"},
+				Value:       10 * time.Second,
+				Destination: &encryptionKMSTimeout,
+			},
 		},
 	}
 }
@@ -76,6 +108,16 @@ func runAzure(ctx *cli.Context) error {
 	be, err := azure.New(azAccount, azKey, azServiceURL, azSASToken, CopyObjectThreshold, azCopySASVersion)
 	if err != nil {
 		return fmt.Errorf("init azure: %w", err)
+	}
+	primary, managed, err := loadEncryptionProviders(ctx.Context)
+	if err != nil {
+		return err
+	}
+	if err := be.ConfigureEncryption(primary, managed); err != nil {
+		if closer, ok := managed.(interface{ Close() }); ok {
+			closer.Close()
+		}
+		return err
 	}
 
 	return RunGateway(ctx.Context, be)

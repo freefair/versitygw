@@ -224,6 +224,13 @@ func (c S3ApiController) CreateMultipartUpload(ctx fiber.Ctx) (*Response, error)
 			},
 		}, err
 	}
+	encryptionIntent, err := c.resolveWriteEncryption(ctx, bucket)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if encryptionIntent != nil {
+		defer encryptionIntent.CustomerKey.Destroy()
+	}
 
 	res, err := c.be.CreateMultipartUpload(ctx.RequestCtx(),
 		s3response.CreateMultipartUploadInput{
@@ -243,12 +250,23 @@ func (c S3ApiController) CreateMultipartUpload(ctx fiber.Ctx) (*Response, error)
 			Metadata:                  metadata,
 			ChecksumAlgorithm:         checksumAlgorithm,
 			ChecksumType:              checksumType,
+			SSECustomerAlgorithm:      utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:            utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:         utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
+			SSEKMSEncryptionContext:   utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-context")),
+			SSEKMSKeyId:               utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-aws-kms-key-id")),
+			BucketKeyEnabled:          boolPtrFromIntent(encryptionIntent),
+			ServerSideEncryption:      types.ServerSideEncryption(ctx.Get("x-amz-server-side-encryption")),
+			Encryption:                encryptionIntent,
 		})
 	var headers map[string]*string
 	if err == nil {
 		headers = map[string]*string{
 			"x-amz-checksum-algorithm": utils.ConvertToStringPtr(checksumAlgorithm),
 			"x-amz-checksum-type":      utils.ConvertToStringPtr(checksumType),
+		}
+		for key, value := range encryptionResponseHeaders(res.Encryption) {
+			headers[key] = value
 		}
 	}
 	return &Response{
@@ -343,6 +361,13 @@ func (c S3ApiController) CompleteMultipartUpload(ctx fiber.Ctx) (*Response, erro
 			},
 		}, err
 	}
+	readEncryption, err := c.parseReadCustomerEncryption(ctx, false)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if readEncryption != nil {
+		defer readEncryption.CustomerKey.Destroy()
+	}
 
 	err = utils.IsChecksumTypeValid(checksumType)
 	if err != nil {
@@ -372,30 +397,35 @@ func (c S3ApiController) CompleteMultipartUpload(ctx fiber.Ctx) (*Response, erro
 			MultipartUpload: &types.CompletedMultipartUpload{
 				Parts: body.Parts,
 			},
-			MpuObjectSize:     mpuObjectSize,
-			ChecksumCRC32:     utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32]),
-			ChecksumCRC32C:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32c]),
-			ChecksumSHA1:      utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha1]),
-			ChecksumSHA256:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha256]),
-			ChecksumCRC64NVME: utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc64nvme]),
-			ChecksumSHA512:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha512]),
-			ChecksumMD5:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmMd5]),
-			ChecksumXXHASH64:  utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash64]),
-			ChecksumXXHASH3:   utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash3]),
-			ChecksumXXHASH128: utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash128]),
-			ChecksumType:      checksumType,
-			IfMatch:           ifMatch,
-			IfNoneMatch:       ifNoneMatch,
+			MpuObjectSize:        mpuObjectSize,
+			ChecksumCRC32:        utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32]),
+			ChecksumCRC32C:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32c]),
+			ChecksumSHA1:         utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha1]),
+			ChecksumSHA256:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha256]),
+			ChecksumCRC64NVME:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc64nvme]),
+			ChecksumSHA512:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha512]),
+			ChecksumMD5:          utils.GetStringPtr(checksums[types.ChecksumAlgorithmMd5]),
+			ChecksumXXHASH64:     utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash64]),
+			ChecksumXXHASH3:      utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash3]),
+			ChecksumXXHASH128:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash128]),
+			ChecksumType:         checksumType,
+			IfMatch:              ifMatch,
+			IfNoneMatch:          ifNoneMatch,
+			SSECustomerAlgorithm: utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:       utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:    utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
 		})
 	if err == nil {
 		objUrl := utils.GenerateObjectLocation(ctx, c.virtualDomain, bucket, key)
 		res.Location = &objUrl
 	}
+	headers := map[string]*string{"x-amz-version-id": &versid}
+	for key, value := range encryptionResponseHeaders(res.Encryption) {
+		headers[key] = value
+	}
 	return &Response{
-		Data: res,
-		Headers: map[string]*string{
-			"x-amz-version-id": &versid,
-		},
+		Data:    res,
+		Headers: headers,
 		MetaOpts: &MetaOptions{
 			BucketOwner: parsedAcl.Owner,
 			ObjectETag:  res.ETag,

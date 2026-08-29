@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/versity/versitygw/internal/encryption"
 	"github.com/versity/versitygw/s3err"
 )
 
@@ -44,6 +45,7 @@ type PutObjectOutput struct {
 	ChecksumXXHASH128 *string
 	Size              *int64
 	ChecksumType      types.ChecksumType
+	Encryption        *encryption.Result
 }
 
 // Part describes part metadata.
@@ -466,6 +468,7 @@ type CompleteMultipartUploadResult struct {
 	ChecksumXXHASH3   *string
 	ChecksumXXHASH128 *string
 	ChecksumType      *types.ChecksumType
+	Encryption        *encryption.Result `xml:"-"`
 }
 
 type AccessControlPolicy struct {
@@ -502,10 +505,11 @@ type OwnershipControls struct {
 }
 
 type InitiateMultipartUploadResult struct {
-	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ InitiateMultipartUploadResult" json:"-"`
-	Bucket   string
-	Key      string
-	UploadId string
+	XMLName    xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ InitiateMultipartUploadResult" json:"-"`
+	Bucket     string
+	Key        string
+	UploadId   string
+	Encryption *encryption.Result `xml:"-"`
 }
 
 type ListVersionsResult struct {
@@ -603,14 +607,17 @@ type PutObjectInput struct {
 	SSECustomerKeyMD5       *string
 	SSEKMSEncryptionContext *string
 	SSEKMSKeyId             *string
+	BucketKeyEnabled        *bool
 	WebsiteRedirectLocation *string
 
 	ObjectLockMode            types.ObjectLockMode
 	ObjectLockLegalHoldStatus types.ObjectLockLegalHoldStatus
 	ChecksumAlgorithm         types.ChecksumAlgorithm
+	ServerSideEncryption      types.ServerSideEncryption
 
-	Metadata map[string]string
-	Body     io.Reader
+	Metadata   map[string]string
+	Body       io.Reader
+	Encryption *encryption.Intent
 }
 
 type CreateMultipartUploadInput struct {
@@ -646,6 +653,7 @@ type CreateMultipartUploadInput struct {
 	RequestPayer              types.RequestPayer
 	ServerSideEncryption      types.ServerSideEncryption
 	StorageClass              types.StorageClass
+	Encryption                *encryption.Intent
 }
 
 type CopyObjectInput struct {
@@ -692,6 +700,8 @@ type CopyObjectInput struct {
 	RequestPayer              types.RequestPayer
 	ServerSideEncryption      types.ServerSideEncryption
 	StorageClass              types.StorageClass
+	SourceEncryption          *encryption.Intent
+	DestinationEncryption     *encryption.Intent
 	TaggingDirective          types.TaggingDirective
 }
 

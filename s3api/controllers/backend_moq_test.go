@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/versity/versitygw/backend"
+	"github.com/versity/versitygw/internal/encryption"
+	"github.com/versity/versitygw/internal/lifecycle"
 	"github.com/versity/versitygw/s3response"
 	"sync"
 )
@@ -59,6 +61,12 @@ var _ backend.Backend = &BackendMock{}
 //			DeleteBucketWebsiteFunc: func(contextMoqParam context.Context, bucket string) error {
 //				panic("mock out the DeleteBucketWebsite method")
 //			},
+//			DeleteEncryptionConfigurationFunc: func(contextMoqParam context.Context, s string) error {
+//				panic("mock out the DeleteEncryptionConfiguration method")
+//			},
+//			DeleteLifecycleConfigurationFunc: func(contextMoqParam context.Context, s string) error {
+//				panic("mock out the DeleteLifecycleConfiguration method")
+//			},
 //			DeleteObjectFunc: func(contextMoqParam context.Context, deleteObjectInput *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 //				panic("mock out the DeleteObject method")
 //			},
@@ -67,6 +75,9 @@ var _ backend.Backend = &BackendMock{}
 //			},
 //			DeleteObjectsFunc: func(contextMoqParam context.Context, deleteObjectsInput *s3.DeleteObjectsInput) (s3response.DeleteResult, error) {
 //				panic("mock out the DeleteObjects method")
+//			},
+//			EncryptionCapabilitiesFunc: func() encryption.Capabilities {
+//				panic("mock out the EncryptionCapabilities method")
 //			},
 //			GetBucketAclFunc: func(contextMoqParam context.Context, getBucketAclInput *s3.GetBucketAclInput) ([]byte, error) {
 //				panic("mock out the GetBucketAcl method")
@@ -88,6 +99,12 @@ var _ backend.Backend = &BackendMock{}
 //			},
 //			GetBucketWebsiteFunc: func(contextMoqParam context.Context, bucket string) ([]byte, error) {
 //				panic("mock out the GetBucketWebsite method")
+//			},
+//			GetEncryptionConfigurationFunc: func(contextMoqParam context.Context, s string) (encryption.Configuration, error) {
+//				panic("mock out the GetEncryptionConfiguration method")
+//			},
+//			GetLifecycleConfigurationFunc: func(contextMoqParam context.Context, s string) (lifecycle.Configuration, error) {
+//				panic("mock out the GetLifecycleConfiguration method")
 //			},
 //			GetObjectFunc: func(contextMoqParam context.Context, getObjectInput *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 //				panic("mock out the GetObject method")
@@ -115,6 +132,9 @@ var _ backend.Backend = &BackendMock{}
 //			},
 //			HeadObjectFunc: func(contextMoqParam context.Context, headObjectInput *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
 //				panic("mock out the HeadObject method")
+//			},
+//			LifecycleCapabilitiesFunc: func() lifecycle.Capabilities {
+//				panic("mock out the LifecycleCapabilities method")
 //			},
 //			ListBucketsFunc: func(contextMoqParam context.Context, listBucketsInput s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
 //				panic("mock out the ListBuckets method")
@@ -160,6 +180,12 @@ var _ backend.Backend = &BackendMock{}
 //			},
 //			PutBucketWebsiteFunc: func(contextMoqParam context.Context, bucket string, website []byte) error {
 //				panic("mock out the PutBucketWebsite method")
+//			},
+//			PutEncryptionConfigurationFunc: func(contextMoqParam context.Context, s string, configuration encryption.Configuration) error {
+//				panic("mock out the PutEncryptionConfiguration method")
+//			},
+//			PutLifecycleConfigurationFunc: func(contextMoqParam context.Context, s string, configuration lifecycle.Configuration) error {
+//				panic("mock out the PutLifecycleConfiguration method")
 //			},
 //			PutObjectFunc: func(contextMoqParam context.Context, putObjectInput s3response.PutObjectInput) (s3response.PutObjectOutput, error) {
 //				panic("mock out the PutObject method")
@@ -240,6 +266,12 @@ type BackendMock struct {
 	// DeleteBucketWebsiteFunc mocks the DeleteBucketWebsite method.
 	DeleteBucketWebsiteFunc func(contextMoqParam context.Context, bucket string) error
 
+	// DeleteEncryptionConfigurationFunc mocks the DeleteEncryptionConfiguration method.
+	DeleteEncryptionConfigurationFunc func(contextMoqParam context.Context, s string) error
+
+	// DeleteLifecycleConfigurationFunc mocks the DeleteLifecycleConfiguration method.
+	DeleteLifecycleConfigurationFunc func(contextMoqParam context.Context, s string) error
+
 	// DeleteObjectFunc mocks the DeleteObject method.
 	DeleteObjectFunc func(contextMoqParam context.Context, deleteObjectInput *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
 
@@ -248,6 +280,9 @@ type BackendMock struct {
 
 	// DeleteObjectsFunc mocks the DeleteObjects method.
 	DeleteObjectsFunc func(contextMoqParam context.Context, deleteObjectsInput *s3.DeleteObjectsInput) (s3response.DeleteResult, error)
+
+	// EncryptionCapabilitiesFunc mocks the EncryptionCapabilities method.
+	EncryptionCapabilitiesFunc func() encryption.Capabilities
 
 	// GetBucketAclFunc mocks the GetBucketAcl method.
 	GetBucketAclFunc func(contextMoqParam context.Context, getBucketAclInput *s3.GetBucketAclInput) ([]byte, error)
@@ -269,6 +304,12 @@ type BackendMock struct {
 
 	// GetBucketWebsiteFunc mocks the GetBucketWebsite method.
 	GetBucketWebsiteFunc func(contextMoqParam context.Context, bucket string) ([]byte, error)
+
+	// GetEncryptionConfigurationFunc mocks the GetEncryptionConfiguration method.
+	GetEncryptionConfigurationFunc func(contextMoqParam context.Context, s string) (encryption.Configuration, error)
+
+	// GetLifecycleConfigurationFunc mocks the GetLifecycleConfiguration method.
+	GetLifecycleConfigurationFunc func(contextMoqParam context.Context, s string) (lifecycle.Configuration, error)
 
 	// GetObjectFunc mocks the GetObject method.
 	GetObjectFunc func(contextMoqParam context.Context, getObjectInput *s3.GetObjectInput) (*s3.GetObjectOutput, error)
@@ -296,6 +337,9 @@ type BackendMock struct {
 
 	// HeadObjectFunc mocks the HeadObject method.
 	HeadObjectFunc func(contextMoqParam context.Context, headObjectInput *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
+
+	// LifecycleCapabilitiesFunc mocks the LifecycleCapabilities method.
+	LifecycleCapabilitiesFunc func() lifecycle.Capabilities
 
 	// ListBucketsFunc mocks the ListBuckets method.
 	ListBucketsFunc func(contextMoqParam context.Context, listBucketsInput s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error)
@@ -341,6 +385,12 @@ type BackendMock struct {
 
 	// PutBucketWebsiteFunc mocks the PutBucketWebsite method.
 	PutBucketWebsiteFunc func(contextMoqParam context.Context, bucket string, website []byte) error
+
+	// PutEncryptionConfigurationFunc mocks the PutEncryptionConfiguration method.
+	PutEncryptionConfigurationFunc func(contextMoqParam context.Context, s string, configuration encryption.Configuration) error
+
+	// PutLifecycleConfigurationFunc mocks the PutLifecycleConfiguration method.
+	PutLifecycleConfigurationFunc func(contextMoqParam context.Context, s string, configuration lifecycle.Configuration) error
 
 	// PutObjectFunc mocks the PutObject method.
 	PutObjectFunc func(contextMoqParam context.Context, putObjectInput s3response.PutObjectInput) (s3response.PutObjectOutput, error)
@@ -468,6 +518,20 @@ type BackendMock struct {
 			// Bucket is the bucket argument value.
 			Bucket string
 		}
+		// DeleteEncryptionConfiguration holds details about calls to the DeleteEncryptionConfiguration method.
+		DeleteEncryptionConfiguration []struct {
+			// ContextMoqParam is the contextMoqParam argument value.
+			ContextMoqParam context.Context
+			// S is the s argument value.
+			S string
+		}
+		// DeleteLifecycleConfiguration holds details about calls to the DeleteLifecycleConfiguration method.
+		DeleteLifecycleConfiguration []struct {
+			// ContextMoqParam is the contextMoqParam argument value.
+			ContextMoqParam context.Context
+			// S is the s argument value.
+			S string
+		}
 		// DeleteObject holds details about calls to the DeleteObject method.
 		DeleteObject []struct {
 			// ContextMoqParam is the contextMoqParam argument value.
@@ -492,6 +556,9 @@ type BackendMock struct {
 			ContextMoqParam context.Context
 			// DeleteObjectsInput is the deleteObjectsInput argument value.
 			DeleteObjectsInput *s3.DeleteObjectsInput
+		}
+		// EncryptionCapabilities holds details about calls to the EncryptionCapabilities method.
+		EncryptionCapabilities []struct {
 		}
 		// GetBucketAcl holds details about calls to the GetBucketAcl method.
 		GetBucketAcl []struct {
@@ -541,6 +608,20 @@ type BackendMock struct {
 			ContextMoqParam context.Context
 			// Bucket is the bucket argument value.
 			Bucket string
+		}
+		// GetEncryptionConfiguration holds details about calls to the GetEncryptionConfiguration method.
+		GetEncryptionConfiguration []struct {
+			// ContextMoqParam is the contextMoqParam argument value.
+			ContextMoqParam context.Context
+			// S is the s argument value.
+			S string
+		}
+		// GetLifecycleConfiguration holds details about calls to the GetLifecycleConfiguration method.
+		GetLifecycleConfiguration []struct {
+			// ContextMoqParam is the contextMoqParam argument value.
+			ContextMoqParam context.Context
+			// S is the s argument value.
+			S string
 		}
 		// GetObject holds details about calls to the GetObject method.
 		GetObject []struct {
@@ -616,6 +697,9 @@ type BackendMock struct {
 			ContextMoqParam context.Context
 			// HeadObjectInput is the headObjectInput argument value.
 			HeadObjectInput *s3.HeadObjectInput
+		}
+		// LifecycleCapabilities holds details about calls to the LifecycleCapabilities method.
+		LifecycleCapabilities []struct {
 		}
 		// ListBuckets holds details about calls to the ListBuckets method.
 		ListBuckets []struct {
@@ -734,6 +818,24 @@ type BackendMock struct {
 			// Website is the website argument value.
 			Website []byte
 		}
+		// PutEncryptionConfiguration holds details about calls to the PutEncryptionConfiguration method.
+		PutEncryptionConfiguration []struct {
+			// ContextMoqParam is the contextMoqParam argument value.
+			ContextMoqParam context.Context
+			// S is the s argument value.
+			S string
+			// Configuration is the configuration argument value.
+			Configuration encryption.Configuration
+		}
+		// PutLifecycleConfiguration holds details about calls to the PutLifecycleConfiguration method.
+		PutLifecycleConfiguration []struct {
+			// ContextMoqParam is the contextMoqParam argument value.
+			ContextMoqParam context.Context
+			// S is the s argument value.
+			S string
+			// Configuration is the configuration argument value.
+			Configuration lifecycle.Configuration
+		}
 		// PutObject holds details about calls to the PutObject method.
 		PutObject []struct {
 			// ContextMoqParam is the contextMoqParam argument value.
@@ -843,9 +945,12 @@ type BackendMock struct {
 	lockDeleteBucketPolicy            sync.RWMutex
 	lockDeleteBucketTagging           sync.RWMutex
 	lockDeleteBucketWebsite           sync.RWMutex
+	lockDeleteEncryptionConfiguration sync.RWMutex
+	lockDeleteLifecycleConfiguration  sync.RWMutex
 	lockDeleteObject                  sync.RWMutex
 	lockDeleteObjectTagging           sync.RWMutex
 	lockDeleteObjects                 sync.RWMutex
+	lockEncryptionCapabilities        sync.RWMutex
 	lockGetBucketAcl                  sync.RWMutex
 	lockGetBucketCors                 sync.RWMutex
 	lockGetBucketOwnershipControls    sync.RWMutex
@@ -853,6 +958,8 @@ type BackendMock struct {
 	lockGetBucketTagging              sync.RWMutex
 	lockGetBucketVersioning           sync.RWMutex
 	lockGetBucketWebsite              sync.RWMutex
+	lockGetEncryptionConfiguration    sync.RWMutex
+	lockGetLifecycleConfiguration     sync.RWMutex
 	lockGetObject                     sync.RWMutex
 	lockGetObjectAcl                  sync.RWMutex
 	lockGetObjectAttributes           sync.RWMutex
@@ -862,6 +969,7 @@ type BackendMock struct {
 	lockGetObjectTagging              sync.RWMutex
 	lockHeadBucket                    sync.RWMutex
 	lockHeadObject                    sync.RWMutex
+	lockLifecycleCapabilities         sync.RWMutex
 	lockListBuckets                   sync.RWMutex
 	lockListBucketsAndOwners          sync.RWMutex
 	lockListMultipartUploads          sync.RWMutex
@@ -877,6 +985,8 @@ type BackendMock struct {
 	lockPutBucketTagging              sync.RWMutex
 	lockPutBucketVersioning           sync.RWMutex
 	lockPutBucketWebsite              sync.RWMutex
+	lockPutEncryptionConfiguration    sync.RWMutex
+	lockPutLifecycleConfiguration     sync.RWMutex
 	lockPutObject                     sync.RWMutex
 	lockPutObjectAcl                  sync.RWMutex
 	lockPutObjectLegalHold            sync.RWMutex
@@ -1331,6 +1441,78 @@ func (mock *BackendMock) DeleteBucketWebsiteCalls() []struct {
 	return calls
 }
 
+// DeleteEncryptionConfiguration calls DeleteEncryptionConfigurationFunc.
+func (mock *BackendMock) DeleteEncryptionConfiguration(contextMoqParam context.Context, s string) error {
+	if mock.DeleteEncryptionConfigurationFunc == nil {
+		panic("BackendMock.DeleteEncryptionConfigurationFunc: method is nil but Backend.DeleteEncryptionConfiguration was just called")
+	}
+	callInfo := struct {
+		ContextMoqParam context.Context
+		S               string
+	}{
+		ContextMoqParam: contextMoqParam,
+		S:               s,
+	}
+	mock.lockDeleteEncryptionConfiguration.Lock()
+	mock.calls.DeleteEncryptionConfiguration = append(mock.calls.DeleteEncryptionConfiguration, callInfo)
+	mock.lockDeleteEncryptionConfiguration.Unlock()
+	return mock.DeleteEncryptionConfigurationFunc(contextMoqParam, s)
+}
+
+// DeleteEncryptionConfigurationCalls gets all the calls that were made to DeleteEncryptionConfiguration.
+// Check the length with:
+//
+//	len(mockedBackend.DeleteEncryptionConfigurationCalls())
+func (mock *BackendMock) DeleteEncryptionConfigurationCalls() []struct {
+	ContextMoqParam context.Context
+	S               string
+} {
+	var calls []struct {
+		ContextMoqParam context.Context
+		S               string
+	}
+	mock.lockDeleteEncryptionConfiguration.RLock()
+	calls = mock.calls.DeleteEncryptionConfiguration
+	mock.lockDeleteEncryptionConfiguration.RUnlock()
+	return calls
+}
+
+// DeleteLifecycleConfiguration calls DeleteLifecycleConfigurationFunc.
+func (mock *BackendMock) DeleteLifecycleConfiguration(contextMoqParam context.Context, s string) error {
+	if mock.DeleteLifecycleConfigurationFunc == nil {
+		panic("BackendMock.DeleteLifecycleConfigurationFunc: method is nil but Backend.DeleteLifecycleConfiguration was just called")
+	}
+	callInfo := struct {
+		ContextMoqParam context.Context
+		S               string
+	}{
+		ContextMoqParam: contextMoqParam,
+		S:               s,
+	}
+	mock.lockDeleteLifecycleConfiguration.Lock()
+	mock.calls.DeleteLifecycleConfiguration = append(mock.calls.DeleteLifecycleConfiguration, callInfo)
+	mock.lockDeleteLifecycleConfiguration.Unlock()
+	return mock.DeleteLifecycleConfigurationFunc(contextMoqParam, s)
+}
+
+// DeleteLifecycleConfigurationCalls gets all the calls that were made to DeleteLifecycleConfiguration.
+// Check the length with:
+//
+//	len(mockedBackend.DeleteLifecycleConfigurationCalls())
+func (mock *BackendMock) DeleteLifecycleConfigurationCalls() []struct {
+	ContextMoqParam context.Context
+	S               string
+} {
+	var calls []struct {
+		ContextMoqParam context.Context
+		S               string
+	}
+	mock.lockDeleteLifecycleConfiguration.RLock()
+	calls = mock.calls.DeleteLifecycleConfiguration
+	mock.lockDeleteLifecycleConfiguration.RUnlock()
+	return calls
+}
+
 // DeleteObject calls DeleteObjectFunc.
 func (mock *BackendMock) DeleteObject(contextMoqParam context.Context, deleteObjectInput *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	if mock.DeleteObjectFunc == nil {
@@ -1444,6 +1626,33 @@ func (mock *BackendMock) DeleteObjectsCalls() []struct {
 	mock.lockDeleteObjects.RLock()
 	calls = mock.calls.DeleteObjects
 	mock.lockDeleteObjects.RUnlock()
+	return calls
+}
+
+// EncryptionCapabilities calls EncryptionCapabilitiesFunc.
+func (mock *BackendMock) EncryptionCapabilities() encryption.Capabilities {
+	if mock.EncryptionCapabilitiesFunc == nil {
+		panic("BackendMock.EncryptionCapabilitiesFunc: method is nil but Backend.EncryptionCapabilities was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockEncryptionCapabilities.Lock()
+	mock.calls.EncryptionCapabilities = append(mock.calls.EncryptionCapabilities, callInfo)
+	mock.lockEncryptionCapabilities.Unlock()
+	return mock.EncryptionCapabilitiesFunc()
+}
+
+// EncryptionCapabilitiesCalls gets all the calls that were made to EncryptionCapabilities.
+// Check the length with:
+//
+//	len(mockedBackend.EncryptionCapabilitiesCalls())
+func (mock *BackendMock) EncryptionCapabilitiesCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockEncryptionCapabilities.RLock()
+	calls = mock.calls.EncryptionCapabilities
+	mock.lockEncryptionCapabilities.RUnlock()
 	return calls
 }
 
@@ -1696,6 +1905,78 @@ func (mock *BackendMock) GetBucketWebsiteCalls() []struct {
 	mock.lockGetBucketWebsite.RLock()
 	calls = mock.calls.GetBucketWebsite
 	mock.lockGetBucketWebsite.RUnlock()
+	return calls
+}
+
+// GetEncryptionConfiguration calls GetEncryptionConfigurationFunc.
+func (mock *BackendMock) GetEncryptionConfiguration(contextMoqParam context.Context, s string) (encryption.Configuration, error) {
+	if mock.GetEncryptionConfigurationFunc == nil {
+		panic("BackendMock.GetEncryptionConfigurationFunc: method is nil but Backend.GetEncryptionConfiguration was just called")
+	}
+	callInfo := struct {
+		ContextMoqParam context.Context
+		S               string
+	}{
+		ContextMoqParam: contextMoqParam,
+		S:               s,
+	}
+	mock.lockGetEncryptionConfiguration.Lock()
+	mock.calls.GetEncryptionConfiguration = append(mock.calls.GetEncryptionConfiguration, callInfo)
+	mock.lockGetEncryptionConfiguration.Unlock()
+	return mock.GetEncryptionConfigurationFunc(contextMoqParam, s)
+}
+
+// GetEncryptionConfigurationCalls gets all the calls that were made to GetEncryptionConfiguration.
+// Check the length with:
+//
+//	len(mockedBackend.GetEncryptionConfigurationCalls())
+func (mock *BackendMock) GetEncryptionConfigurationCalls() []struct {
+	ContextMoqParam context.Context
+	S               string
+} {
+	var calls []struct {
+		ContextMoqParam context.Context
+		S               string
+	}
+	mock.lockGetEncryptionConfiguration.RLock()
+	calls = mock.calls.GetEncryptionConfiguration
+	mock.lockGetEncryptionConfiguration.RUnlock()
+	return calls
+}
+
+// GetLifecycleConfiguration calls GetLifecycleConfigurationFunc.
+func (mock *BackendMock) GetLifecycleConfiguration(contextMoqParam context.Context, s string) (lifecycle.Configuration, error) {
+	if mock.GetLifecycleConfigurationFunc == nil {
+		panic("BackendMock.GetLifecycleConfigurationFunc: method is nil but Backend.GetLifecycleConfiguration was just called")
+	}
+	callInfo := struct {
+		ContextMoqParam context.Context
+		S               string
+	}{
+		ContextMoqParam: contextMoqParam,
+		S:               s,
+	}
+	mock.lockGetLifecycleConfiguration.Lock()
+	mock.calls.GetLifecycleConfiguration = append(mock.calls.GetLifecycleConfiguration, callInfo)
+	mock.lockGetLifecycleConfiguration.Unlock()
+	return mock.GetLifecycleConfigurationFunc(contextMoqParam, s)
+}
+
+// GetLifecycleConfigurationCalls gets all the calls that were made to GetLifecycleConfiguration.
+// Check the length with:
+//
+//	len(mockedBackend.GetLifecycleConfigurationCalls())
+func (mock *BackendMock) GetLifecycleConfigurationCalls() []struct {
+	ContextMoqParam context.Context
+	S               string
+} {
+	var calls []struct {
+		ContextMoqParam context.Context
+		S               string
+	}
+	mock.lockGetLifecycleConfiguration.RLock()
+	calls = mock.calls.GetLifecycleConfiguration
+	mock.lockGetLifecycleConfiguration.RUnlock()
 	return calls
 }
 
@@ -2044,6 +2325,33 @@ func (mock *BackendMock) HeadObjectCalls() []struct {
 	mock.lockHeadObject.RLock()
 	calls = mock.calls.HeadObject
 	mock.lockHeadObject.RUnlock()
+	return calls
+}
+
+// LifecycleCapabilities calls LifecycleCapabilitiesFunc.
+func (mock *BackendMock) LifecycleCapabilities() lifecycle.Capabilities {
+	if mock.LifecycleCapabilitiesFunc == nil {
+		panic("BackendMock.LifecycleCapabilitiesFunc: method is nil but Backend.LifecycleCapabilities was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockLifecycleCapabilities.Lock()
+	mock.calls.LifecycleCapabilities = append(mock.calls.LifecycleCapabilities, callInfo)
+	mock.lockLifecycleCapabilities.Unlock()
+	return mock.LifecycleCapabilitiesFunc()
+}
+
+// LifecycleCapabilitiesCalls gets all the calls that were made to LifecycleCapabilities.
+// Check the length with:
+//
+//	len(mockedBackend.LifecycleCapabilitiesCalls())
+func (mock *BackendMock) LifecycleCapabilitiesCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockLifecycleCapabilities.RLock()
+	calls = mock.calls.LifecycleCapabilities
+	mock.lockLifecycleCapabilities.RUnlock()
 	return calls
 }
 
@@ -2608,6 +2916,86 @@ func (mock *BackendMock) PutBucketWebsiteCalls() []struct {
 	mock.lockPutBucketWebsite.RLock()
 	calls = mock.calls.PutBucketWebsite
 	mock.lockPutBucketWebsite.RUnlock()
+	return calls
+}
+
+// PutEncryptionConfiguration calls PutEncryptionConfigurationFunc.
+func (mock *BackendMock) PutEncryptionConfiguration(contextMoqParam context.Context, s string, configuration encryption.Configuration) error {
+	if mock.PutEncryptionConfigurationFunc == nil {
+		panic("BackendMock.PutEncryptionConfigurationFunc: method is nil but Backend.PutEncryptionConfiguration was just called")
+	}
+	callInfo := struct {
+		ContextMoqParam context.Context
+		S               string
+		Configuration   encryption.Configuration
+	}{
+		ContextMoqParam: contextMoqParam,
+		S:               s,
+		Configuration:   configuration,
+	}
+	mock.lockPutEncryptionConfiguration.Lock()
+	mock.calls.PutEncryptionConfiguration = append(mock.calls.PutEncryptionConfiguration, callInfo)
+	mock.lockPutEncryptionConfiguration.Unlock()
+	return mock.PutEncryptionConfigurationFunc(contextMoqParam, s, configuration)
+}
+
+// PutEncryptionConfigurationCalls gets all the calls that were made to PutEncryptionConfiguration.
+// Check the length with:
+//
+//	len(mockedBackend.PutEncryptionConfigurationCalls())
+func (mock *BackendMock) PutEncryptionConfigurationCalls() []struct {
+	ContextMoqParam context.Context
+	S               string
+	Configuration   encryption.Configuration
+} {
+	var calls []struct {
+		ContextMoqParam context.Context
+		S               string
+		Configuration   encryption.Configuration
+	}
+	mock.lockPutEncryptionConfiguration.RLock()
+	calls = mock.calls.PutEncryptionConfiguration
+	mock.lockPutEncryptionConfiguration.RUnlock()
+	return calls
+}
+
+// PutLifecycleConfiguration calls PutLifecycleConfigurationFunc.
+func (mock *BackendMock) PutLifecycleConfiguration(contextMoqParam context.Context, s string, configuration lifecycle.Configuration) error {
+	if mock.PutLifecycleConfigurationFunc == nil {
+		panic("BackendMock.PutLifecycleConfigurationFunc: method is nil but Backend.PutLifecycleConfiguration was just called")
+	}
+	callInfo := struct {
+		ContextMoqParam context.Context
+		S               string
+		Configuration   lifecycle.Configuration
+	}{
+		ContextMoqParam: contextMoqParam,
+		S:               s,
+		Configuration:   configuration,
+	}
+	mock.lockPutLifecycleConfiguration.Lock()
+	mock.calls.PutLifecycleConfiguration = append(mock.calls.PutLifecycleConfiguration, callInfo)
+	mock.lockPutLifecycleConfiguration.Unlock()
+	return mock.PutLifecycleConfigurationFunc(contextMoqParam, s, configuration)
+}
+
+// PutLifecycleConfigurationCalls gets all the calls that were made to PutLifecycleConfiguration.
+// Check the length with:
+//
+//	len(mockedBackend.PutLifecycleConfigurationCalls())
+func (mock *BackendMock) PutLifecycleConfigurationCalls() []struct {
+	ContextMoqParam context.Context
+	S               string
+	Configuration   lifecycle.Configuration
+} {
+	var calls []struct {
+		ContextMoqParam context.Context
+		S               string
+		Configuration   lifecycle.Configuration
+	}
+	mock.lockPutLifecycleConfiguration.RLock()
+	calls = mock.calls.PutLifecycleConfiguration
+	mock.lockPutLifecycleConfiguration.RUnlock()
 	return calls
 }
 

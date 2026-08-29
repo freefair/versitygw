@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -48,6 +50,7 @@ import (
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/internal/encryption"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
 )
@@ -65,6 +68,7 @@ const (
 	keyPolicy              key = "Policy"
 	keyCors                key = "Cors"
 	keyWebsite             key = "Website"
+	keyLifecycle           key = "Lifecycle"
 	keyBucketLock          key = "Bucketlock"
 	keyObjRetention        key = "Objectretention"
 	keyObjLegalHold        key = "Objectlegalhold"
@@ -79,7 +83,14 @@ const (
 	// keyMpMetadata stores multipart upload part-offset metadata on the final
 	// committed blob so that GetObject/HeadObject can serve individual parts
 	// by part-number.
-	keyMpMetadata key = "Mpmetadata"
+	keyMpMetadata             key = "Mpmetadata"
+	keyEncryption             key = "Encryption"
+	keyObjectEncryption       key = "Vgwencryption"
+	keyObjectPlaintextSize    key = "Vgwplaintextsize"
+	keyMultipartEncryption    key = "Vgwmpencryption"
+	keyMultipartPartETag      key = "Vgwmpetag"
+	keyMultipartPartNumber    key = "Vgwmppartnumber"
+	keyMultipartPartPlainSize key = "Vgwmppartplainsize"
 
 	defaultListingMaxKeys = 1000
 )
@@ -92,6 +103,7 @@ func (key) Table() map[string]struct{} {
 		"policy":             {},
 		"bucketlock":         {},
 		"website":            {},
+		"lifecycle":          {},
 		"objectretention":    {},
 		"vgwexpires":         {},
 		"vgwwebsiteredirect": {},
@@ -99,6 +111,12 @@ func (key) Table() map[string]struct{} {
 		"objname":            {},
 		".sgwtmp/multipart":  {},
 		"mpmetadata":         {},
+		"vgwencryption":      {},
+		"vgwplaintextsize":   {},
+		"vgwmpencryption":    {},
+		"vgwmpetag":          {},
+		"vgwmppartnumber":    {},
+		"vgwmppartplainsize": {},
 	}
 }
 
@@ -115,12 +133,21 @@ type Azure struct {
 	// SAS for server-side copy. Empty means use the SDK default. This exists so
 	// endpoints that lag the SDK's SAS version (e.g. Azurite) can verify the
 	// signature; production leaves it unset.
-	copySASVersion string
+	copySASVersion  string
+	lifecycleMu     sync.Mutex
+	lifecycleLeases map[string]*azureLifecycleLease
+
+	encryptionProvider        encryption.KeyProvider
+	managedEncryptionProvider encryption.KeyProvider
+	dsseEncryptionProvider    encryption.KeyProvider
+	clientOptions             azcore.ClientOptions
 }
 
 var _ backend.Backend = &Azure{}
 
 func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThreshold int64, copySASVersion string) (*Azure, error) {
+	clientOptions := newAzureClientOptions()
+	azblobOptions := &azblob.ClientOptions{ClientOptions: clientOptions}
 	url := serviceURL
 	if serviceURL == "" && accountName != "" {
 		// if not otherwise specified, use the typical form:
@@ -129,7 +156,7 @@ func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThresho
 	}
 
 	if sasToken != "" {
-		client, err := azblob.NewClientWithNoCredential(url+"?"+sasToken, nil)
+		client, err := azblob.NewClientWithNoCredential(url+"?"+sasToken, azblobOptions)
 		if err != nil {
 			return nil, fmt.Errorf("init client: %w", err)
 		}
@@ -139,6 +166,7 @@ func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThresho
 			sasToken:            sasToken,
 			copyObjectThreshold: copyObjectThreshold,
 			copySASVersion:      copySASVersion,
+			clientOptions:       clientOptions,
 		}, nil
 	}
 
@@ -152,7 +180,7 @@ func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThresho
 		if err != nil {
 			return nil, fmt.Errorf("init default credentials: %w", err)
 		}
-		client, err := azblob.NewClient(url, cred, nil)
+		client, err := azblob.NewClient(url, cred, azblobOptions)
 		if err != nil {
 			return nil, fmt.Errorf("init client: %w", err)
 		}
@@ -162,6 +190,7 @@ func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThresho
 			defaultCreds:        cred,
 			copyObjectThreshold: copyObjectThreshold,
 			copySASVersion:      copySASVersion,
+			clientOptions:       clientOptions,
 		}, nil
 	}
 
@@ -170,7 +199,7 @@ func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThresho
 		return nil, fmt.Errorf("init credentials: %w", err)
 	}
 
-	client, err := azblob.NewClientWithSharedKeyCredential(url, cred, nil)
+	client, err := azblob.NewClientWithSharedKeyCredential(url, cred, azblobOptions)
 	if err != nil {
 		return nil, fmt.Errorf("init client: %w", err)
 	}
@@ -181,10 +210,33 @@ func New(accountName, accountKey, serviceURL, sasToken string, copyObjectThresho
 		sharedkeyCreds:      cred,
 		copyObjectThreshold: copyObjectThreshold,
 		copySASVersion:      copySASVersion,
+		clientOptions:       clientOptions,
 	}, nil
 }
 
-func (az *Azure) Shutdown() {}
+func newAzureClientOptions() azcore.ClientOptions {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Blob Content-Encoding is S3 object metadata. The gateway must receive the
+	// stored bytes unchanged, especially when those bytes are an encrypted
+	// container whose object metadata happens to say gzip.
+	transport.DisableCompression = true
+	return azcore.ClientOptions{Transport: &http.Client{Transport: transport}}
+}
+
+func (az *Azure) Shutdown() {
+	az.lifecycleMu.Lock()
+	leases := make([]*azureLifecycleLease, 0, len(az.lifecycleLeases))
+	for _, lifecycleLease := range az.lifecycleLeases {
+		leases = append(leases, lifecycleLease)
+	}
+	az.lifecycleMu.Unlock()
+	for _, lifecycleLease := range leases {
+		_ = lifecycleLease.Close()
+	}
+	if closer, ok := az.managedEncryptionProvider.(interface{ Close() }); ok {
+		closer.Close()
+	}
+}
 
 func (az *Azure) String() string {
 	return "Azure Blob Gateway"
@@ -194,6 +246,13 @@ func (az *Azure) CreateBucket(ctx context.Context, input *s3.CreateBucketInput, 
 	meta := map[string]*string{
 		string(keyAclCapital): backend.GetPtrFromString(encodeBytes(acl)),
 		string(keyOwnership):  backend.GetPtrFromString(encodeBytes([]byte(input.ObjectOwnership))),
+	}
+	if az.EncryptionActive() {
+		configuration, err := encryption.MarshalConfiguration(encryption.DefaultConfiguration())
+		if err != nil {
+			return fmt.Errorf("marshal default bucket encryption: %w", err)
+		}
+		meta[string(keyEncryption)] = backend.GetPtrFromString(encodeBytes(configuration))
 	}
 
 	acct, ok := ctx.Value("bucket-owner").(auth.Account)
@@ -371,7 +430,21 @@ func (az *Azure) PutObject(ctx context.Context, po s3response.PutObjectInput) (s
 		return s3response.PutObjectOutput{}, err
 	}
 
+	effectiveEncryption, err := az.resolveEncryptionIntent(po.Encryption)
+	if err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
 	metadata := parseMetadata(po.Metadata)
+	if metadata == nil {
+		metadata = map[string]*string{}
+	}
+	plaintextSize := int64(0)
+	if po.ContentLength != nil {
+		plaintextSize = *po.ContentLength
+	}
+	if err := storeAzureEncryptionMetadata(metadata, effectiveEncryption, plaintextSize); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
 
 	// Store the "Expires" property in the object metadata
 	if getString(po.Expires) != "" {
@@ -411,7 +484,24 @@ func (az *Azure) PutObject(ctx context.Context, po s3response.PutObjectInput) (s
 		opts.HTTPHeaders.BlobContentType = po.ContentType
 	}
 
-	uploadResp, err := az.client.UploadStream(ctx, *po.Bucket, *po.Key, po.Body, opts)
+	uploadBody := po.Body
+	var encryptedBody io.ReadCloser
+	var encryptionDone <-chan error
+	if effectiveEncryption != nil {
+		encryptedBody, encryptionDone = az.encryptedUploadReader(ctx, encryption.Identity{
+			Bucket: *po.Bucket, Key: *po.Key, VersionID: azureNullVersionID,
+		}, effectiveEncryption, po.Body, plaintextSize)
+		uploadBody = encryptedBody
+	}
+
+	uploadResp, err := az.client.UploadStream(ctx, *po.Bucket, *po.Key, uploadBody, opts)
+	if encryptedBody != nil {
+		_ = encryptedBody.Close()
+		encryptionErr := <-encryptionDone
+		if err == nil && encryptionErr != nil {
+			return s3response.PutObjectOutput{}, fmt.Errorf("encrypt Azure object: %w", encryptionErr)
+		}
+	}
 	if err != nil {
 		return s3response.PutObjectOutput{}, azureErrToS3Err(err)
 	}
@@ -447,8 +537,9 @@ func (az *Azure) PutObject(ctx context.Context, po s3response.PutObjectInput) (s
 	}
 
 	return s3response.PutObjectOutput{
-		ETag: convertAzureEtag(uploadResp.ETag),
-		Size: po.ContentLength,
+		ETag:       convertAzureEtag(uploadResp.ETag),
+		Size:       po.ContentLength,
+		Encryption: azureEncryptionResultPtr(effectiveEncryption),
 	}, nil
 }
 
@@ -512,14 +603,42 @@ func (az *Azure) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.G
 		}
 	}
 
-	var objSize int64
+	var storedSize int64
 	if resp.ContentLength != nil {
-		objSize = *resp.ContentLength
+		storedSize = *resp.ContentLength
+	}
+	readerAt := &azureBlobReaderAt{ctx: ctx, client: client}
+	metadataResult, metadataSize, metadataEncrypted, err := loadAzureEncryptionMetadata(resp.Metadata)
+	if err != nil {
+		return nil, encryption.ErrInvalidContainer
+	}
+	encryptedReader, encryptionResult, isEncrypted, err := az.openEncryptedReader(ctx, readerAt, storedSize, encryption.Identity{
+		Bucket: *input.Bucket, Key: *input.Key, VersionID: azureNullVersionID,
+	}, metadataEncrypted, getString(input.SSECustomerAlgorithm), getString(input.SSECustomerKey), getString(input.SSECustomerKeyMD5))
+	if err != nil {
+		return nil, err
+	}
+	bodyOwnsEncryptedReader := false
+	defer func() {
+		if encryptedReader != nil && !bodyOwnsEncryptedReader {
+			_ = encryptedReader.Close()
+		}
+	}()
+	if metadataEncrypted && (!isEncrypted || metadataSize != encryptedReader.PlaintextSize() || metadataResult != encryptionResult) {
+		return nil, encryption.ErrInvalidContainer
+	}
+	objSize := storedSize
+	var storedEncryption *encryption.Result
+	if isEncrypted {
+		objSize = encryptedReader.PlaintextSize()
+		storedEncryption = &encryptionResult
 	}
 
 	var opts *azblob.DownloadStreamOptions
 	var partsCount *int32
 	var contentRange *string
+	var startOffset int64
+	length := objSize
 
 	if input.PartNumber != nil {
 		// Serve a specific part if the object has multipart upload metadata.
@@ -538,22 +657,11 @@ func (az *Azure) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.G
 				return nil, s3err.GetInvalidPartNumberRangeErr(totalParts, partNum)
 			}
 
-			var startOffset int64
 			if partNum > 1 {
 				startOffset = mpMeta.Parts[partNum-2]
 			}
-			length := mpMeta.Parts[partNum-1] - startOffset
-			var objSize int64
-			if resp.ContentLength != nil {
-				objSize = *resp.ContentLength
-			}
+			length = mpMeta.Parts[partNum-1] - startOffset
 			contentRange = backend.GetPtrFromString(fmt.Sprintf("bytes %d-%d/%d", startOffset, startOffset+length-1, objSize))
-			opts = &azblob.DownloadStreamOptions{
-				Range: blob.HTTPRange{
-					Offset: startOffset,
-					Count:  length,
-				},
-			}
 		} else if *input.PartNumber > 1 {
 			return nil, s3err.GetInvalidPartNumberRangeErr(1, *input.PartNumber)
 		} else {
@@ -564,50 +672,65 @@ func (az *Azure) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.G
 				contentRange = backend.GetPtrFromString(fmt.Sprintf("bytes 0-%d/%d", objSize-1, objSize))
 			}
 		}
-	} else if *input.Range != "" {
+	} else if getString(input.Range) != "" {
 		offset, count, isValid, err := backend.ParseObjectRange(objSize, *input.Range)
 		if err != nil {
 			return nil, err
 		}
 		if isValid {
-			opts = &azblob.DownloadStreamOptions{
-				Range: blob.HTTPRange{
-					Count:  count,
-					Offset: offset,
-				},
-			}
+			startOffset, length = offset, count
 			contentRange = backend.GetPtrFromString(fmt.Sprintf("bytes %v-%v/%v", offset, offset+count-1, objSize))
 		}
 	}
+	if !isEncrypted && (startOffset != 0 || length != objSize) {
+		opts = &azblob.DownloadStreamOptions{Range: blob.HTTPRange{Offset: startOffset, Count: length}}
+	}
 
-	blobDownloadResponse, err := az.client.DownloadStream(ctx, *input.Bucket, *input.Key, opts)
-	if err != nil {
-		return nil, azureErrToS3Err(err)
+	var body io.ReadCloser
+	if isEncrypted {
+		rangeBody, err := encryptedReader.RangeReader(startOffset, length)
+		if err != nil {
+			return nil, err
+		}
+		body = &azureEncryptedBody{body: rangeBody, reader: encryptedReader}
+		bodyOwnsEncryptedReader = true
+	} else {
+		blobDownloadResponse, err := az.client.DownloadStream(ctx, *input.Bucket, *input.Key, opts)
+		if err != nil {
+			return nil, azureErrToS3Err(err)
+		}
+		body = blobDownloadResponse.Body
 	}
 
 	var tagcount int32
-	if blobDownloadResponse.TagCount != nil {
-		tagcount = int32(*blobDownloadResponse.TagCount)
+	if resp.TagCount != nil {
+		tagcount = int32(*resp.TagCount)
 	}
+	serverSideEncryption, kmsKeyID, customerAlgorithm, customerKeyMD5, bucketKeyEnabled := azureEncryptionOutput(storedEncryption)
 
 	return &s3.GetObjectOutput{
 		AcceptRanges:            backend.GetPtrFromString("bytes"),
-		ContentLength:           blobDownloadResponse.ContentLength,
-		ContentEncoding:         blobDownloadResponse.ContentEncoding,
-		ContentType:             blobDownloadResponse.ContentType,
-		ContentDisposition:      blobDownloadResponse.ContentDisposition,
-		ContentLanguage:         blobDownloadResponse.ContentLanguage,
-		CacheControl:            blobDownloadResponse.CacheControl,
-		ExpiresString:           blobDownloadResponse.Metadata[string(keyExpires)],
-		WebsiteRedirectLocation: blobDownloadResponse.Metadata[string(keyWebsiteRedirect)],
-		ETag:                    backend.GetPtrFromString(convertAzureEtag(blobDownloadResponse.ETag)),
-		LastModified:            blobDownloadResponse.LastModified,
-		Metadata:                parseAndFilterAzMetadata(blobDownloadResponse.Metadata),
+		ContentLength:           &length,
+		ContentEncoding:         resp.ContentEncoding,
+		ContentType:             resp.ContentType,
+		ContentDisposition:      resp.ContentDisposition,
+		ContentLanguage:         resp.ContentLanguage,
+		CacheControl:            resp.CacheControl,
+		ExpiresString:           resp.Metadata[string(keyExpires)],
+		WebsiteRedirectLocation: resp.Metadata[string(keyWebsiteRedirect)],
+		ETag:                    backend.GetPtrFromString(convertAzureEtag(resp.ETag)),
+		LastModified:            resp.LastModified,
+		Metadata:                parseAndFilterAzMetadata(resp.Metadata),
 		TagCount:                &tagcount,
 		ContentRange:            contentRange,
-		Body:                    blobDownloadResponse.Body,
+		Body:                    body,
 		StorageClass:            types.StorageClassStandard,
 		PartsCount:              partsCount,
+		ServerSideEncryption:    serverSideEncryption,
+		SSEKMSKeyId:             kmsKeyID,
+		SSECustomerAlgorithm:    customerAlgorithm,
+		SSECustomerKeyMD5:       customerKeyMD5,
+		BucketKeyEnabled:        bucketKeyEnabled,
 	}, nil
 }
 
@@ -635,9 +758,32 @@ func (az *Azure) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3
 		}
 	}
 
-	var size int64
+	var storedSize int64
 	if resp.ContentLength != nil {
-		size = *resp.ContentLength
+		storedSize = *resp.ContentLength
+	}
+	readerAt := &azureBlobReaderAt{ctx: ctx, client: client}
+	metadataResult, metadataSize, metadataEncrypted, err := loadAzureEncryptionMetadata(resp.Metadata)
+	if err != nil {
+		return nil, encryption.ErrInvalidContainer
+	}
+	encryptedReader, encryptionResult, isEncrypted, err := az.openEncryptedReader(ctx, readerAt, storedSize, encryption.Identity{
+		Bucket: *input.Bucket, Key: *input.Key, VersionID: azureNullVersionID,
+	}, metadataEncrypted, getString(input.SSECustomerAlgorithm), getString(input.SSECustomerKey), getString(input.SSECustomerKeyMD5))
+	if err != nil {
+		return nil, err
+	}
+	if encryptedReader != nil {
+		defer encryptedReader.Close()
+	}
+	if metadataEncrypted && (!isEncrypted || metadataSize != encryptedReader.PlaintextSize() || metadataResult != encryptionResult) {
+		return nil, encryption.ErrInvalidContainer
+	}
+	size := storedSize
+	var storedEncryption *encryption.Result
+	if isEncrypted {
+		size = encryptedReader.PlaintextSize()
+		storedEncryption = &encryptionResult
 	}
 
 	var contentRange *string
@@ -690,6 +836,7 @@ func (az *Azure) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3
 		}
 	}
 
+	serverSideEncryption, kmsKeyID, customerAlgorithm, customerKeyMD5, bucketKeyEnabled := azureEncryptionOutput(storedEncryption)
 	result := &s3.HeadObjectOutput{
 		ContentRange:            contentRange,
 		AcceptRanges:            backend.GetPtrFromString("bytes"),
@@ -706,6 +853,11 @@ func (az *Azure) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3
 		LastModified:            resp.LastModified,
 		Metadata:                parseAndFilterAzMetadata(resp.Metadata),
 		StorageClass:            types.StorageClassStandard,
+		ServerSideEncryption:    serverSideEncryption,
+		SSEKMSKeyId:             kmsKeyID,
+		SSECustomerAlgorithm:    customerAlgorithm,
+		SSECustomerKeyMD5:       customerKeyMD5,
+		BucketKeyEnabled:        bucketKeyEnabled,
 	}
 
 	status, ok := resp.Metadata[string(keyObjLegalHold)]
@@ -737,8 +889,12 @@ func (az *Azure) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3
 
 func (az *Azure) GetObjectAttributes(ctx context.Context, input *s3.GetObjectAttributesInput) (s3response.GetObjectAttributesResponse, error) {
 	data, err := az.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: input.Bucket,
-		Key:    input.Key,
+		Bucket:               input.Bucket,
+		Key:                  input.Key,
+		VersionId:            input.VersionId,
+		SSECustomerAlgorithm: input.SSECustomerAlgorithm,
+		SSECustomerKey:       input.SSECustomerKey,
+		SSECustomerKeyMD5:    input.SSECustomerKeyMD5,
 	})
 	if err != nil {
 		return s3response.GetObjectAttributesResponse{}, err
@@ -838,8 +994,9 @@ func (az *Azure) listBlobs(ctx context.Context, client *container.Client, opts a
 	var page azListingPage
 
 	pager := client.NewListBlobsHierarchyPager("", &container.ListBlobsHierarchyOptions{
-		Prefix: backend.GetPtrFromString(opts.prefix),
-		Marker: backend.GetPtrFromString(opts.azureMarker),
+		Include: container.ListBlobsInclude{Metadata: true},
+		Prefix:  backend.GetPtrFromString(opts.prefix),
+		Marker:  backend.GetPtrFromString(opts.azureMarker),
 	})
 
 	// the Azure marker that started the blob page currently being processed
@@ -899,11 +1056,15 @@ loop:
 					Prefix: backend.GetPtrFromString(key),
 				})
 			} else {
+				size, err := azureListedObjectSize(v.Properties.ContentLength, v.Metadata)
+				if err != nil {
+					return azListingPage{}, err
+				}
 				page.objects = append(page.objects, s3response.Object{
 					ETag:         backend.GetPtrFromString(convertAzureEtag(v.Properties.ETag)),
 					Key:          v.Name,
 					LastModified: v.Properties.LastModified,
-					Size:         v.Properties.ContentLength,
+					Size:         size,
 					StorageClass: types.ObjectStorageClassStandard,
 					Owner: &types.Owner{
 						ID: &opts.owner,
@@ -1163,10 +1324,12 @@ func (az *Azure) CopyObject(ctx context.Context, input s3response.CopyObjectInpu
 	if err != nil {
 		return s3response.CopyObjectOutput{}, err
 	}
-
 	srcBucket, srcObj, _, err := backend.ParseCopySource(*input.CopySource)
 	if err != nil {
 		return s3response.CopyObjectOutput{}, err
+	}
+	if srcBucket == *input.Bucket && srcObj == *input.Key && input.MetadataDirective != types.MetadataDirectiveReplace && !azureCopyChangesEncryption(input) {
+		return s3response.CopyObjectOutput{}, s3err.GetAPIError(s3err.ErrInvalidCopyDest)
 	}
 
 	if input.ExpectedSourceBucketOwner != nil && *input.ExpectedSourceBucketOwner != "" {
@@ -1183,25 +1346,26 @@ func (az *Azure) CopyObject(ctx context.Context, input s3response.CopyObjectInpu
 		}
 	}
 
-	if !areNils(input.CopySourceIfMatch, input.CopySourceIfNoneMatch) || !areNils(input.CopySourceIfModifiedSince, input.CopySourceIfUnmodifiedSince) {
-		_, err = az.HeadObject(ctx, &s3.HeadObjectInput{
-			Bucket:            &srcBucket,
-			Key:               &srcObj,
-			IfMatch:           input.CopySourceIfMatch,
-			IfNoneMatch:       input.CopySourceIfNoneMatch,
-			IfModifiedSince:   input.CopySourceIfModifiedSince,
-			IfUnmodifiedSince: input.CopySourceIfUnmodifiedSince,
-		})
-		if err != nil {
-			return s3response.CopyObjectOutput{}, err
-		}
+	sourceHead, err := az.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket:               &srcBucket,
+		Key:                  &srcObj,
+		IfMatch:              input.CopySourceIfMatch,
+		IfNoneMatch:          input.CopySourceIfNoneMatch,
+		IfModifiedSince:      input.CopySourceIfModifiedSince,
+		IfUnmodifiedSince:    input.CopySourceIfUnmodifiedSince,
+		SSECustomerAlgorithm: input.CopySourceSSECustomerAlgorithm,
+		SSECustomerKey:       input.CopySourceSSECustomerKey,
+		SSECustomerKeyMD5:    input.CopySourceSSECustomerKeyMD5,
+	})
+	if err != nil {
+		return s3response.CopyObjectOutput{}, err
+	}
+	sourceEncrypted := sourceHead.ServerSideEncryption != "" || sourceHead.SSECustomerAlgorithm != nil
+	if sourceEncrypted || input.DestinationEncryption != nil {
+		return az.copyObjectWithEnvelope(ctx, input, srcBucket, srcObj, sourceHead)
 	}
 
 	if srcBucket == *input.Bucket && srcObj == *input.Key {
-		if input.MetadataDirective != types.MetadataDirectiveReplace {
-			return s3response.CopyObjectOutput{}, s3err.GetAPIError(s3err.ErrInvalidCopyDest)
-		}
-
 		resp, err := dstClient.GetProperties(ctx, nil)
 		if err != nil {
 			return s3response.CopyObjectOutput{}, azureErrToS3Err(err)
@@ -1394,6 +1558,11 @@ func (az *Azure) CopyObject(ctx context.Context, input s3response.CopyObjectInpu
 	}, nil
 }
 
+func azureCopyChangesEncryption(input s3response.CopyObjectInput) bool {
+	return input.ServerSideEncryption != "" || input.SSECustomerAlgorithm != nil || input.SSECustomerKey != nil ||
+		input.SSECustomerKeyMD5 != nil || input.SSEKMSKeyId != nil || input.SSEKMSEncryptionContext != nil || input.BucketKeyEnabled != nil
+}
+
 func (az *Azure) PutObjectTagging(ctx context.Context, bucket, object, _ string, tags map[string]string) error {
 	client, err := az.getBlobClient(bucket, object)
 	if err != nil {
@@ -1462,7 +1631,17 @@ func (az *Azure) CreateMultipartUpload(ctx context.Context, input s3response.Cre
 	}
 
 	meta := parseMetadata(input.Metadata)
+	if meta == nil {
+		meta = map[string]*string{}
+	}
 	meta[string(onameAttr)] = input.Key
+	effectiveEncryption, err := az.resolveEncryptionIntent(input.Encryption)
+	if err != nil {
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
+	if err := storeAzureMultipartEncryptionMetadata(meta, effectiveEncryption); err != nil {
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
 
 	if getString(input.Expires) != "" {
 		meta[string(keyExpires)] = input.Expires
@@ -1532,6 +1711,13 @@ func (az *Azure) UploadPart(ctx context.Context, input *s3.UploadPartInput) (*s3
 	if err != nil {
 		return nil, err
 	}
+	state, err := az.multipartEncryptionState(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	if err != nil {
+		return nil, err
+	}
+	if state != nil {
+		return az.uploadEncryptedPart(ctx, input, state)
+	}
 
 	// TODO: request streamable version of StageBlock()
 	// (*blockblob.Client).StageBlock does not have a streamable
@@ -1579,12 +1765,43 @@ func (az *Azure) UploadPart(ctx context.Context, input *s3.UploadPartInput) (*s3
 }
 
 func (az *Azure) UploadPartCopy(ctx context.Context, input *s3.UploadPartCopyInput) (s3response.CopyPartResult, error) {
-	client, err := az.getBlockBlobClient(*input.Bucket, *input.Key)
+	err := az.checkIfMpExists(ctx, *input.Bucket, *input.Key, *input.UploadId)
 	if err != nil {
 		return s3response.CopyPartResult{}, err
 	}
+	state, err := az.multipartEncryptionState(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	if err != nil {
+		return s3response.CopyPartResult{}, err
+	}
+	if state != nil {
+		sourceBucket, sourceKey, _, err := backend.ParseCopySource(*input.CopySource)
+		if err != nil {
+			return s3response.CopyPartResult{}, err
+		}
+		source, err := az.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: &sourceBucket, Key: &sourceKey, Range: input.CopySourceRange,
+			IfMatch: input.CopySourceIfMatch, IfNoneMatch: input.CopySourceIfNoneMatch,
+			IfModifiedSince: input.CopySourceIfModifiedSince, IfUnmodifiedSince: input.CopySourceIfUnmodifiedSince,
+			SSECustomerAlgorithm: input.CopySourceSSECustomerAlgorithm,
+			SSECustomerKey:       input.CopySourceSSECustomerKey, SSECustomerKeyMD5: input.CopySourceSSECustomerKeyMD5,
+		})
+		if err != nil {
+			return s3response.CopyPartResult{}, err
+		}
+		defer source.Body.Close()
+		part, err := az.uploadEncryptedPart(ctx, &s3.UploadPartInput{
+			Bucket: input.Bucket, Key: input.Key, UploadId: input.UploadId, PartNumber: input.PartNumber,
+			Body: source.Body, ContentLength: source.ContentLength,
+			SSECustomerAlgorithm: input.SSECustomerAlgorithm, SSECustomerKey: input.SSECustomerKey,
+			SSECustomerKeyMD5: input.SSECustomerKeyMD5,
+		}, state)
+		if err != nil {
+			return s3response.CopyPartResult{}, err
+		}
+		return s3response.CopyPartResult{ETag: part.ETag, LastModified: time.Now().UTC()}, nil
+	}
 
-	err = az.checkIfMpExists(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	client, err := az.getBlockBlobClient(*input.Bucket, *input.Key)
 	if err != nil {
 		return s3response.CopyPartResult{}, err
 	}
@@ -1611,6 +1828,13 @@ func (az *Azure) ListParts(ctx context.Context, input *s3.ListPartsInput) (s3res
 	err := az.checkIfMpExists(ctx, *input.Bucket, *input.Key, *input.UploadId)
 	if err != nil {
 		return s3response.ListPartsResult{}, err
+	}
+	state, err := az.multipartEncryptionState(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	if err != nil {
+		return s3response.ListPartsResult{}, err
+	}
+	if state != nil {
+		return az.listEncryptedParts(ctx, input)
 	}
 	client, err := az.getBlockBlobClient(*input.Bucket, *input.Key)
 	if err != nil {
@@ -1812,7 +2036,22 @@ func (az *Azure) AbortMultipartUpload(ctx context.Context, input *s3.AbortMultip
 			return s3err.GetPreconditionFailedErr(s3err.ConditionIfMatchInitiatedTime)
 		}
 	}
-	_, err := az.client.DeleteBlob(ctx, *input.Bucket, tmpPath, nil)
+	state, err := az.multipartEncryptionState(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	if err != nil {
+		return err
+	}
+	if state != nil {
+		maxParts := int32(10000)
+		parts, err := az.listEncryptedParts(ctx, &s3.ListPartsInput{
+			Bucket: input.Bucket, Key: input.Key, UploadId: input.UploadId,
+			MaxParts: &maxParts, PartNumberMarker: backend.GetPtrFromString(""),
+		})
+		if err != nil {
+			return err
+		}
+		return az.cleanupEncryptedMultipart(ctx, *input.Bucket, *input.Key, *input.UploadId, parts.Parts)
+	}
+	_, err = az.client.DeleteBlob(ctx, *input.Bucket, tmpPath, nil)
 	if err != nil {
 		return parseMpError(err)
 	}
@@ -1879,6 +2118,20 @@ func (az *Azure) CompleteMultipartUpload(ctx context.Context, input *s3.Complete
 	tags, err := blobClient.GetTags(ctx, nil)
 	if err != nil {
 		return res, "", parseMpError(err)
+	}
+	state, err := loadAzureMultipartEncryptionMetadata(props.Metadata)
+	if err != nil {
+		return res, "", err
+	}
+	if state != nil {
+		completed, found, err := az.resumeCompletedEncryptedMultipart(ctx, input, state)
+		if err != nil {
+			return res, "", err
+		}
+		if found {
+			return completed, "", nil
+		}
+		return az.completeEncryptedMultipart(ctx, input, state, props, tags)
 	}
 
 	client, err := az.getBlockBlobClient(*input.Bucket, *input.Key)
@@ -2320,35 +2573,38 @@ func (az *Azure) getBlobURL(cntr, blb string) string {
 
 func (az *Azure) getBlobClient(cntr, blb string) (*blob.Client, error) {
 	blobURL := az.getBlobURL(cntr, blb)
+	options := &blob.ClientOptions{ClientOptions: az.clientOptions}
 	if az.defaultCreds != nil {
-		return blob.NewClient(blobURL, az.defaultCreds, nil)
+		return blob.NewClient(blobURL, az.defaultCreds, options)
 	}
 	if az.sasToken != "" {
-		return blob.NewClientWithNoCredential(blobURL+"?"+az.sasToken, nil)
+		return blob.NewClientWithNoCredential(blobURL+"?"+az.sasToken, options)
 	}
-	return blob.NewClientWithSharedKeyCredential(blobURL, az.sharedkeyCreds, nil)
+	return blob.NewClientWithSharedKeyCredential(blobURL, az.sharedkeyCreds, options)
 }
 
 func (az *Azure) getContainerClient(cntr string) (*container.Client, error) {
 	containerURL := az.getContainerURL(cntr)
+	options := &container.ClientOptions{ClientOptions: az.clientOptions}
 	if az.defaultCreds != nil {
-		return container.NewClient(containerURL, az.defaultCreds, nil)
+		return container.NewClient(containerURL, az.defaultCreds, options)
 	}
 	if az.sasToken != "" {
-		return container.NewClientWithNoCredential(containerURL+"?"+az.sasToken, nil)
+		return container.NewClientWithNoCredential(containerURL+"?"+az.sasToken, options)
 	}
-	return container.NewClientWithSharedKeyCredential(containerURL, az.sharedkeyCreds, nil)
+	return container.NewClientWithSharedKeyCredential(containerURL, az.sharedkeyCreds, options)
 }
 
 func (az *Azure) getBlockBlobClient(cntr, blb string) (*blockblob.Client, error) {
 	blobURL := az.getBlobURL(cntr, blb)
+	options := &blockblob.ClientOptions{ClientOptions: az.clientOptions}
 	if az.defaultCreds != nil {
-		return blockblob.NewClient(blobURL, az.defaultCreds, nil)
+		return blockblob.NewClient(blobURL, az.defaultCreds, options)
 	}
 	if az.sasToken != "" {
-		return blockblob.NewClientWithNoCredential(blobURL+"?"+az.sasToken, nil)
+		return blockblob.NewClientWithNoCredential(blobURL+"?"+az.sasToken, options)
 	}
-	return blockblob.NewClientWithSharedKeyCredential(blobURL, az.sharedkeyCreds, nil)
+	return blockblob.NewClientWithSharedKeyCredential(blobURL, az.sharedkeyCreds, options)
 }
 
 func parseMetadata(m map[string]string) map[string]*string {

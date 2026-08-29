@@ -145,6 +145,7 @@ const (
 	ErrObjectLockConfigurationNotAllowed
 	ErrObjectLocked
 	ErrNoSuchBucketPolicy
+	ErrNoSuchLifecycleConfiguration
 	ErrBucketTaggingNotFound
 	ErrObjectAttributesInvalidHeader
 	ErrRequestTimeTooSkewed
@@ -521,6 +522,11 @@ var errorCodeResponse = map[ErrorCode]APIError{
 	ErrNoSuchBucketPolicy: {
 		Code:           "NoSuchBucketPolicy",
 		Description:    "The bucket policy does not exist.",
+		HTTPStatusCode: http.StatusNotFound,
+	},
+	ErrNoSuchLifecycleConfiguration: {
+		Code:           "NoSuchLifecycleConfiguration",
+		Description:    "The lifecycle configuration does not exist.",
 		HTTPStatusCode: http.StatusNotFound,
 	},
 	ErrBucketTaggingNotFound: {

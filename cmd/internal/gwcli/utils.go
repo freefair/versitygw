@@ -34,6 +34,8 @@ func UtilsCommand() *cli.Command {
 		Name:  "utils",
 		Usage: "utility helper CLI tool",
 		Subcommands: []*cli.Command{
+			encryptionKeyCommand(),
+			encryptionMaintenanceCommand(),
 			{
 				Name:    "gen-event-filter-config",
 				Aliases: []string{"gefc"},

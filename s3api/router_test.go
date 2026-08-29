@@ -15,6 +15,8 @@
 package s3api
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -40,5 +42,26 @@ func TestS3ApiRouter_Init(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.sa.Init()
 		})
+	}
+}
+
+func TestBucketConfigurationRoutesVerifyChecksums(t *testing.T) {
+	source, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"encryption", "lifecycle"} {
+		start := strings.Index(string(source), `middlewares.MatchQueryArgs("`+query+`")`)
+		if start < 0 {
+			t.Fatalf("route for %s not found", query)
+		}
+		end := strings.Index(string(source[start:]), "\n\tbucketRouter.Put(")
+		if end < 0 {
+			end = len(source) - start
+		}
+		route := string(source[start : start+end])
+		if !strings.Contains(route, "middlewares.VerifyChecksums(false, false, false)") {
+			t.Fatalf("%s route does not verify request checksums", query)
+		}
 	}
 }

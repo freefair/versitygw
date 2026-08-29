@@ -24,6 +24,8 @@ setup() {
     [ -f "${TEST_ROOT}/tests/lab/.local/inventory.yml" ]
     grep -q 'ansible_host: "192.0.2.10"' "${TEST_ROOT}/tests/lab/.local/inventory.yml"
     grep -q 'scoutfs_quorum_slot: 2' "${TEST_ROOT}/tests/lab/.local/inventory.yml"
+    grep -q 'versitygw_local_binary_path:.*tests/lab/.local/bin/versitygw' \
+        "${TEST_ROOT}/tests/lab/.local/inventory.yml"
 }
 
 @test "inventory generation rejects an incomplete node list" {

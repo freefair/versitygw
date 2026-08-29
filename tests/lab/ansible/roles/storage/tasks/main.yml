@@ -58,6 +58,19 @@
     group: root
     mode: "0777"
 
+- name: Create root-squashed gateway test directories on the NFS server
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}/versitygw/{{ item }}"
+    state: directory
+    owner: nobody
+    group: nobody
+    mode: "0770"
+  loop:
+    - nfs-data
+    - nfs-versions
+    - nfs-archive
+    - scoutfs-archive
+
 - name: Install the restricted NFS export
   ansible.builtin.template:
     src: exports.j2
@@ -166,11 +179,12 @@
     enabled: true
     state: started
 
-- name: Permit iSCSI from the lab network
+- name: Permit iSCSI only from ScoutFS cluster nodes
   ansible.posix.firewalld:
     rich_rule: >-
-      rule family="ipv4" source address="{{ lab_client_cidr }}"
+      rule family="ipv4" source address="{{ item }}/32"
       port port="3260" protocol="tcp" accept
     permanent: true
     immediate: true
     state: enabled
+  loop: "{{ lab_node_ips }}"

@@ -78,6 +78,18 @@ Permanent deletion takes precedence over transition.
 
 Transition takes precedence over creation of a delete marker.
 
+When multiple eligible transitions overlap, the evaluator chooses the
+lower-cost class using Amazon S3's conflict ordering, with Glacier classes
+preferred over Intelligent-Tiering and Intelligent-Tiering preferred over
+other non-archive classes. The transition waterfall is monotonic: an object in
+Glacier Flexible Retrieval can move only to Deep Archive, and Deep Archive does
+not transition to another class. This prevents later evaluations from moving
+objects back to hotter classes. Source: [How Amazon S3 handles conflicts in
+lifecycle configurations](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-conflicts.html)
+and [Transitioning objects using Amazon S3
+Lifecycle](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html),
+retrieved 2026-08-29.
+
 ### Versioning-Suspended Expiration Rules
 
 The pure evaluator and conditional mutation API use the following table. The rule is based on the AWS [Lifecycle configuration elements](https://docs.aws.amazon.com/AmazonS3/latest/userguide/intro-lifecycle-rules.html) description that a suspended bucket creates a `null` delete marker which replaces a `null` object version.
@@ -395,7 +407,11 @@ The POSIX coordinator fails closed. `ENOLCK`, `EOPNOTSUPP`, `EINVAL`, an unavail
 
 The generic POSIX strategy is verified for local Linux filesystems and NFSv4.2 mounted with `hard,proto=tcp,local_lock=none`. Other network filesystems remain unsupported until the same cross-node contention and process-loss suite passes.
 
-ScoutFS v1.33 is an explicit backend exception: cross-node `fcntl` record locks were measured as non-coordinating, so the generic POSIX lease is forbidden there. A ScoutFS coordinator may run only on the mount whose matching `/sys/fs/scoutfs/f.<fsid>.r.<rid>/quorum/is_leader` value is exactly `1`. A local `fcntl` lock on that leader mount serializes multiple gateway processes on the same node. The coordinator rechecks leader state before every mutation and cancels immediately when leadership is lost. Missing, unreadable, zero, or ambiguous matching leader state refuses execution rather than degrading to best effort.
+ScoutFS v1.33 is an explicit backend exception: cross-node `fcntl` and BSD `flock` locks were measured as non-coordinating, so the generic POSIX lease is forbidden there. ScoutFS uses lock files created atomically with `open(O_CREAT|O_EXCL|O_WRONLY, 0600)` for both the per-bucket Lifecycle lease and every per-object mutation critical section. The lock body records hostname, Linux boot ID, PID, and a cryptographically random nonce. Release verifies the complete owner body and renames that exact lock to an owner-specific tombstone before unlinking it.
+
+ScoutFS never steals a lock based on age or a timeout. A contender may recover a lock only when hostname and boot ID match the current process and `kill(pid, 0)` proves that local PID no longer exists. The stale lock is atomically renamed to a unique recovery tombstone before removal. A remote hostname, a changed boot ID, malformed owner data, or an unreadable lock is ambiguous and remains fail-closed for explicit operator inspection. A same-node `fcntl` guard only serializes that narrowly scoped local recovery decision; cluster exclusion comes solely from `O_EXCL`. No Redis or other external coordinator is part of this design.
+
+A ScoutFS coordinator may run only on the mount whose matching `/sys/fs/scoutfs/f.<fsid>.r.<rid>/quorum/is_leader` value is exactly `1`. The coordinator rechecks leader state before every mutation and cancels immediately when leadership is lost. Missing, unreadable, zero, or ambiguous matching leader state refuses execution rather than degrading to best effort. The leader check limits which node scans; the atomic per-object locks also protect client writes arriving through any gateway node.
 
 Azure uses Blob leases.
 
@@ -524,7 +540,7 @@ The exact split may be refined during the failing-test prototype, but these owne
 - Lease acquisition, loss, and cancellation.
 - Suspended-versioning cases for a null data version, a non-null current version, an existing null delete marker with older versions, and a lone expired delete marker.
 - Generic POSIX `fcntl` fail-closed behavior for unsupported syscalls and filesystems.
-- ScoutFS leader-state parsing, same-node lock contention, leadership loss, missing sysfs state, and ambiguous mount matches.
+- ScoutFS leader-state parsing, cross-node `O_EXCL` contention, local dead-PID recovery, ambiguous-lock refusal, ownership-checked release, leadership loss, missing sysfs state, and ambiguous mount matches.
 - Archive transition failure at every atomic step.
 
 ### Integration Tests
@@ -540,7 +556,7 @@ The exact split may be refined during the failing-test prototype, but these owne
 - Restart during a scan and restart during transition.
 - Two gateway instances contend for the same bucket without duplicate action.
 - NFSv4.2 cross-node `fcntl` contention, holder-process termination, gateway restart, NFS server restart, and network partition recovery.
-- ScoutFS v1.33 rejects the generic cross-node lock path, runs only on the elected leader, serializes co-located processes, and stops mutations during leader transition.
+- ScoutFS v1.33 rejects the generic cross-node record-lock path, demonstrates cross-node `O_EXCL` contention, runs scans only on the elected leader, uses the same atomic per-object locks on every gateway, and stops mutations during leader transition.
 - S3Proxy delegates without running a second executor.
 
 ### Differential Tests
@@ -597,7 +613,7 @@ Lifecycle scans are proportional to object and version count unless a future bac
 
 Tag filters may require one metadata read per prefix/size-matched candidate.
 
-Multi-instance correctness depends on backend coordination semantics and must be verified on every supported shared filesystem. NFS uses the verified `fcntl` contract; ScoutFS uses its elected leader plus a same-node `fcntl` lock and never claims cluster-wide POSIX record locking.
+Multi-instance correctness depends on backend coordination semantics and must be verified on every supported shared filesystem. NFS uses the verified `fcntl` contract. ScoutFS uses its elected leader for scan ownership and atomic `O_EXCL` files for cluster-wide bucket and object exclusion; it never claims cluster-wide POSIX record locking.
 
 Transition and Encryption must compose without decrypting and re-encrypting merely to move an archived POSIX payload.
 
@@ -609,5 +625,6 @@ Transition and Encryption must compose without decrypting and re-encrypting mere
 - [Amazon S3 GetBucketLifecycleConfiguration](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketLifecycleConfiguration.html)
 - [Amazon S3 DeleteBucketLifecycle](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteBucketLifecycle.html)
 - [Linux fcntl byte-range locking](https://man7.org/linux/man-pages/man2/fcntl_locking.2.html)
+- [Linux open(2), including O_EXCL](https://man7.org/linux/man-pages/man2/open.2.html)
 - [Linux NFS mount options](https://man7.org/linux/man-pages/man5/nfs.5.html)
 - [ScoutFS source and sysfs interfaces](https://github.com/versity/scoutfs)

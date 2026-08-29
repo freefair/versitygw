@@ -47,6 +47,12 @@ type Manager interface {
 	Close()
 }
 
+// BackgroundManager records metrics for work that has no inbound Fiber
+// request, such as Lifecycle coordinator scans.
+type BackgroundManager interface {
+	SendBackground(context.Context, string, int64, ...Tag)
+}
+
 // manager is a manager of metrics plugins
 type manager struct {
 	wg  sync.WaitGroup
@@ -177,6 +183,13 @@ func (m *manager) Send(ctx fiber.Ctx, err error, action string, count int64, sta
 	case ActionDeleteObjects:
 		m.add("object_removed_count", count, reqTags...)
 	}
+}
+
+func (m *manager) SendBackground(ctx context.Context, key string, value int64, tags ...Tag) {
+	if ctx == nil || ctx.Err() != nil || key == "" {
+		return
+	}
+	m.add(key, value, tags...)
 }
 
 // increment increments the key by one

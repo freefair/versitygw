@@ -1,0 +1,139 @@
+---
+- name: Install gateway and live-probe binaries
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: "{{ versitygw_local_binary_path }}", dest: "{{ versitygw_binary_path }}" }
+    - { src: "{{ versitygw_local_probe_path }}", dest: "{{ versitygw_probe_path }}" }
+  notify: Restart test gateways
+
+- name: Create protected gateway configuration directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ versitygw_config_path }}", mode: "0700" }
+    - { path: "{{ versitygw_key_path }}", mode: "0700" }
+
+- name: Install generated gateway credentials
+  ansible.builtin.copy:
+    src: "{{ versitygw_local_environment_path }}"
+    dest: "{{ versitygw_config_path }}/gateway.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart test gateways
+
+- name: Install generated local wrapping key
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ versitygw_key_path }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - { src: "{{ versitygw_local_key_path }}", dest: "lab-active.key" }
+    - { src: "{{ versitygw_local_active_key_path }}", dest: active }
+  no_log: true
+  notify: Restart test gateways
+
+- name: Verify NFS gateway roots created by the storage server
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ versitygw_nfs_root }}"
+    - "{{ versitygw_nfs_version_root }}"
+    - "{{ versitygw_nfs_archive_root }}"
+    - "{{ versitygw_scoutfs_archive_root }}"
+  register: gateway_nfs_roots
+
+- name: Require all NFS gateway roots
+  ansible.builtin.assert:
+    that: gateway_nfs_roots.results | map(attribute='stat.isdir') | min
+    fail_msg: The storage server did not create every root-squashed gateway directory.
+
+- name: Create ScoutFS gateway roots
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0770"
+  loop:
+    - "{{ versitygw_scoutfs_root }}"
+    - "{{ versitygw_scoutfs_version_root }}"
+  run_once: true
+
+- name: Install gateway service units
+  ansible.builtin.template:
+    src: "{{ item.template }}"
+    dest: "/etc/systemd/system/{{ item.service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { template: versitygw-nfs.service.j2, service: versitygw-nfs }
+    - { template: versitygw-scoutfs.service.j2, service: versitygw-scoutfs }
+  notify: Restart test gateways
+
+- name: Install protected live-probe launcher
+  ansible.builtin.template:
+    src: versitygw-lab-verify.j2
+    dest: /usr/local/sbin/versitygw-lab-verify
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Enable NFS gateway on two nodes
+  ansible.builtin.systemd_service:
+    name: versitygw-nfs.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: inventory_hostname in ['node-a', 'node-b']
+
+- name: Disable NFS gateway on the third node
+  ansible.builtin.systemd_service:
+    name: versitygw-nfs.service
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when: inventory_hostname == 'node-c'
+
+- name: Enable ScoutFS gateway on every cluster node
+  ansible.builtin.systemd_service:
+    name: versitygw-scoutfs.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Permit gateway traffic inside the lab network
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="ipv4" source address="{{ lab_client_cidr }}"
+      port port="{{ item }}" protocol="tcp" accept
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - "{{ versitygw_nfs_port }}"
+    - "{{ versitygw_scoutfs_port }}"
+
+- name: Apply pending gateway restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for enabled gateway ports
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ item }}"
+    timeout: 30
+  loop: >-
+    {{ ([versitygw_scoutfs_port] + ([versitygw_nfs_port] if inventory_hostname in ['node-a', 'node-b'] else [])) }}

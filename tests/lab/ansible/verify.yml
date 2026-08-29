@@ -24,3 +24,201 @@
         - target.service
       changed_when: false
       when: inventory_hostname in groups.storage_servers
+
+    - name: Verify NFS gateway service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, versitygw-nfs.service]
+      changed_when: false
+      when: inventory_hostname in ['node-a', 'node-b']
+
+    - name: Verify ScoutFS gateway service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, versitygw-scoutfs.service]
+      changed_when: false
+      when: inventory_hostname in groups.cluster_nodes
+
+- name: Verify measured cross-node lock behavior
+  hosts: node-a
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Hold the NFS record lock on node-a
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/versitygw-lockprobe
+          - -path
+          - "{{ nfs_mount_path }}/{{ lock_test_directory_name }}/verify.lock"
+          - -hold
+          - 8s
+      async: 12
+      poll: 0
+      register: nfs_lock_holder
+      changed_when: false
+
+    - name: Allow the NFS holder to acquire its lock
+      ansible.builtin.pause:
+        seconds: 1
+
+    - name: Require NFS to reject a competing node
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/versitygw-lockprobe
+          - -path
+          - "{{ nfs_mount_path }}/{{ lock_test_directory_name }}/verify.lock"
+      delegate_to: node-b
+      register: nfs_lock_contender
+      changed_when: false
+      failed_when: nfs_lock_contender.rc != 10 or 'busy' not in nfs_lock_contender.stdout
+
+    - name: Wait for the NFS lock holder
+      ansible.builtin.async_status:
+        jid: "{{ nfs_lock_holder.ansible_job_id }}"
+      register: nfs_lock_holder_status
+      until: nfs_lock_holder_status.finished
+      retries: 12
+      delay: 1
+      changed_when: false
+
+    - name: Hold the ScoutFS record lock on node-a
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/versitygw-lockprobe
+          - -path
+          - "{{ scoutfs_mount_path }}/{{ lock_test_directory_name }}/verify.lock"
+          - -hold
+          - 8s
+      async: 12
+      poll: 0
+      register: scoutfs_lock_holder
+      changed_when: false
+
+    - name: Allow the ScoutFS holder to acquire its lock
+      ansible.builtin.pause:
+        seconds: 1
+
+    - name: Require ScoutFS to demonstrate non-clustered record locks
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/versitygw-lockprobe
+          - -path
+          - "{{ scoutfs_mount_path }}/{{ lock_test_directory_name }}/verify.lock"
+      delegate_to: node-b
+      register: scoutfs_lock_contender
+      changed_when: false
+      failed_when: scoutfs_lock_contender.rc != 0 or 'acquired' not in scoutfs_lock_contender.stdout
+
+    - name: Wait for the ScoutFS lock holder
+      ansible.builtin.async_status:
+        jid: "{{ scoutfs_lock_holder.ansible_job_id }}"
+      register: scoutfs_lock_holder_status
+      until: scoutfs_lock_holder_status.finished
+      retries: 12
+      delay: 1
+      changed_when: false
+
+    - name: Reset the isolated ScoutFS exclusive-lock probe
+      ansible.builtin.file:
+        path: "{{ scoutfs_mount_path }}/{{ lock_test_directory_name }}/verify-exclusive.lock"
+        state: absent
+
+    - name: Hold the ScoutFS atomic exclusive lock on node-a
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/versitygw-lockprobe
+          - -mode
+          - exclusive
+          - -path
+          - "{{ scoutfs_mount_path }}/{{ lock_test_directory_name }}/verify-exclusive.lock"
+          - -hold
+          - 8s
+      async: 12
+      poll: 0
+      register: scoutfs_exclusive_lock_holder
+      changed_when: false
+
+    - name: Allow the ScoutFS exclusive lock holder to acquire its lock
+      ansible.builtin.pause:
+        seconds: 1
+
+    - name: Require ScoutFS atomic exclusive lock contention across nodes
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/versitygw-lockprobe
+          - -mode
+          - exclusive
+          - -path
+          - "{{ scoutfs_mount_path }}/{{ lock_test_directory_name }}/verify-exclusive.lock"
+      delegate_to: node-b
+      register: scoutfs_exclusive_lock_contender
+      changed_when: false
+      failed_when: scoutfs_exclusive_lock_contender.rc != 10 or 'busy' not in scoutfs_exclusive_lock_contender.stdout
+
+    - name: Wait for the ScoutFS exclusive lock holder
+      ansible.builtin.async_status:
+        jid: "{{ scoutfs_exclusive_lock_holder.ansible_job_id }}"
+      register: scoutfs_exclusive_lock_holder_status
+      until: scoutfs_exclusive_lock_holder_status.finished
+      retries: 12
+      delay: 1
+      changed_when: false
+
+- name: Verify live S3 Lifecycle and Encryption behavior
+  hosts: node-a
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run the NFS live behavior probe with one Lifecycle executor
+      block:
+        - name: Stop the peer NFS Lifecycle executor during artificial timestamp aging
+          ansible.builtin.systemd_service:
+            name: versitygw-nfs.service
+            state: stopped
+          delegate_to: node-b
+
+        - name: Run the NFS live behavior probe
+          ansible.builtin.command:
+            argv:
+              - /usr/local/sbin/versitygw-lab-verify
+              - --backend
+              - nfs
+              - --endpoint
+              - "http://127.0.0.1:{{ versitygw_nfs_port }}"
+              - --root
+              - "{{ versitygw_nfs_root }}"
+              - --version-root
+              - "{{ versitygw_nfs_version_root }}"
+              - --archive-root
+              - "{{ versitygw_nfs_archive_root }}"
+          register: nfs_live_probe
+          changed_when: false
+      always:
+        - name: Restore the peer NFS Lifecycle executor
+          ansible.builtin.systemd_service:
+            name: versitygw-nfs.service
+            state: started
+          delegate_to: node-b
+
+    - name: Require a complete NFS live probe result
+      ansible.builtin.assert:
+        that: "'encryption=ok expiration=ok retention=ok transition_restore=ok' in nfs_live_probe.stdout"
+
+    - name: Run the ScoutFS live behavior probe
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/versitygw-lab-verify
+          - --backend
+          - scoutfs
+          - --endpoint
+          - "http://127.0.0.1:{{ versitygw_scoutfs_port }}"
+          - --root
+          - "{{ versitygw_scoutfs_root }}"
+          - --version-root
+          - "{{ versitygw_scoutfs_version_root }}"
+          - --archive-root
+          - "{{ versitygw_scoutfs_archive_root }}"
+      register: scoutfs_live_probe
+      changed_when: false
+
+    - name: Require a complete ScoutFS live probe result
+      ansible.builtin.assert:
+        that: "'encryption=ok expiration=ok retention=ok transition_restore=ok' in scoutfs_live_probe.stdout"

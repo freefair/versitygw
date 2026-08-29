@@ -18,6 +18,7 @@ import (
 	"io/fs"
 
 	"github.com/versity/versitygw/backend"
+	"github.com/versity/versitygw/internal/encryption"
 )
 
 // ScoutfsOpts are the options for the ScoutFS backend
@@ -59,6 +60,15 @@ type ScoutfsOpts struct {
 	// (e.g. "CRC64NVME-<base64>"). For multipart uploads, part ETags become
 	// CRC64NVME-based values and the completed object ETag is checksum-derived.
 	DataIntegrityEtag bool
+	// EncryptionProvider handles the selected SSE-KMS provider.
+	EncryptionProvider encryption.KeyProvider
+	// ManagedEncryptionProvider protects SSE-S3 and the second DSSE layer.
+	ManagedEncryptionProvider encryption.KeyProvider
+	// EncryptionKeyDirectory remains outside object and version roots.
+	EncryptionKeyDirectory string
+	// ArchiveTiers enables gateway-managed POSIX archive roots in addition to
+	// ScoutFS native offline extents.
+	ArchiveTiers map[string]string
 }
 
 var _ backend.Backend = &ScoutFS{}

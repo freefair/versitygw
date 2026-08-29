@@ -16,6 +16,7 @@ package s3api
 
 import (
 	"net/http"
+	"net/netip"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
@@ -29,27 +30,29 @@ import (
 )
 
 type S3ApiRouter struct {
-	WithAdmSrv      bool
-	app             *fiber.App
-	be              backend.Backend
-	iam             auth.IAMService
-	logger          s3log.AuditLogger
-	aLogger         s3log.AuditLogger
-	evs             s3event.S3EventSender
-	mm              metrics.Manager
-	root            middlewares.RootUserConfig
-	Ctrl            controllers.S3ApiController
-	readonly        bool
-	disableACL      bool
-	region          string
-	virtualDomain   string
-	corsAllowOrigin string
-	mpMaxParts      int
+	WithAdmSrv           bool
+	app                  *fiber.App
+	be                   backend.Backend
+	iam                  auth.IAMService
+	logger               s3log.AuditLogger
+	aLogger              s3log.AuditLogger
+	evs                  s3event.S3EventSender
+	mm                   metrics.Manager
+	root                 middlewares.RootUserConfig
+	Ctrl                 controllers.S3ApiController
+	readonly             bool
+	disableACL           bool
+	region               string
+	virtualDomain        string
+	corsAllowOrigin      string
+	mpMaxParts           int
+	trustedProxyPrefixes []netip.Prefix
 }
 
 func (sa *S3ApiRouter) Init() {
-	ctrl := controllers.New(sa.be, sa.iam, sa.logger, sa.evs, sa.mm, sa.readonly, sa.disableACL, sa.virtualDomain, sa.mpMaxParts)
+	ctrl := controllers.New(sa.be, sa.iam, sa.logger, sa.evs, sa.mm, sa.readonly, sa.disableACL, sa.virtualDomain, sa.mpMaxParts, sa.trustedProxyPrefixes...)
 	sa.Ctrl = ctrl
+	sa.app.Use("*", middlewares.ResolveSecureTransport(sa.trustedProxyPrefixes))
 	adminServices := &controllers.Services{
 		Logger: sa.aLogger,
 	}
@@ -302,13 +305,14 @@ func (sa *S3ApiRouter) Init() {
 	bucketRouter.Put("",
 		middlewares.MatchQueryArgs("encryption"),
 		controllers.ProcessHandlers(
-			ctrl.HandleErrorRoute(s3err.GetAPIError(s3err.ErrNotImplemented)),
+			ctrl.PutBucketEncryption,
 			metrics.ActionPutBucketEncryption,
 			services,
 			middlewares.BucketObjectNameValidator(),
 			middlewares.AuthorizePublicBucketAccess(sa.be, metrics.ActionPutBucketEncryption, auth.PutEncryptionConfigurationAction, auth.PermissionWrite, sa.region, false),
 			middlewares.VerifyPresignedV4Signature(sa.root, sa.iam, sa.region, false),
 			middlewares.VerifyV4Signature(sa.root, sa.iam, sa.region, false, true, false),
+			middlewares.VerifyChecksums(false, false, false),
 			middlewares.ParseAcl(sa.be),
 		),
 	)
@@ -341,13 +345,14 @@ func (sa *S3ApiRouter) Init() {
 	bucketRouter.Put("",
 		middlewares.MatchQueryArgs("lifecycle"),
 		controllers.ProcessHandlers(
-			ctrl.HandleErrorRoute(s3err.GetAPIError(s3err.ErrNotImplemented)),
+			ctrl.PutBucketLifecycleConfiguration,
 			metrics.ActionPutBucketLifecycleConfiguration,
 			services,
 			middlewares.BucketObjectNameValidator(),
 			middlewares.AuthorizePublicBucketAccess(sa.be, metrics.ActionPutBucketLifecycleConfiguration, auth.PutLifecycleConfigurationAction, auth.PermissionWrite, sa.region, false),
 			middlewares.VerifyPresignedV4Signature(sa.root, sa.iam, sa.region, false),
 			middlewares.VerifyV4Signature(sa.root, sa.iam, sa.region, false, true, false),
+			middlewares.VerifyChecksums(false, false, false),
 			middlewares.ParseAcl(sa.be),
 		),
 	)
@@ -577,7 +582,7 @@ func (sa *S3ApiRouter) Init() {
 	bucketRouter.Delete("",
 		middlewares.MatchQueryArgs("encryption"),
 		controllers.ProcessHandlers(
-			ctrl.HandleErrorRoute(s3err.GetAPIError(s3err.ErrNotImplemented)),
+			ctrl.DeleteBucketEncryption,
 			metrics.ActionDeleteBucketEncryption,
 			services,
 			middlewares.BucketObjectNameValidator(),
@@ -616,7 +621,7 @@ func (sa *S3ApiRouter) Init() {
 	bucketRouter.Delete("",
 		middlewares.MatchQueryArgs("lifecycle"),
 		controllers.ProcessHandlers(
-			ctrl.HandleErrorRoute(s3err.GetAPIError(s3err.ErrNotImplemented)),
+			ctrl.DeleteBucketLifecycle,
 			metrics.ActionDeleteBucketLifecycle,
 			services,
 			middlewares.BucketObjectNameValidator(),
@@ -878,7 +883,7 @@ func (sa *S3ApiRouter) Init() {
 	bucketRouter.Get("",
 		middlewares.MatchQueryArgs("encryption"),
 		controllers.ProcessHandlers(
-			ctrl.HandleErrorRoute(s3err.GetAPIError(s3err.ErrNotImplemented)),
+			ctrl.GetBucketEncryption,
 			metrics.ActionGetBucketEncryption,
 			services,
 			middlewares.BucketObjectNameValidator(),
@@ -943,7 +948,7 @@ func (sa *S3ApiRouter) Init() {
 	bucketRouter.Get("",
 		middlewares.MatchQueryArgs("lifecycle"),
 		controllers.ProcessHandlers(
-			ctrl.HandleErrorRoute(s3err.GetAPIError(s3err.ErrNotImplemented)),
+			ctrl.GetBucketLifecycleConfiguration,
 			metrics.ActionGetBucketLifecycleConfiguration,
 			services,
 			middlewares.BucketObjectNameValidator(),

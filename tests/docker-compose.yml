@@ -48,4 +48,5 @@ services:
     # leaves this unset and uses the SDK default.
     environment:
       AZ_COPY_SAS_VERSION: "2025-11-05"
-    command: ["sh", "-c", CompileDaemon -build="go build -C ./cmd/versitygw -buildvcs=false -o versitygw" -command="./cmd/versitygw/versitygw -a $ACCESS_KEY_ID -s $SECRET_ACCESS_KEY --iam-dir $IAM_DIR azure -a $AZ_ACCOUNT_NAME -k $AZ_ACCOUNT_KEY --url https://azurite:10000/$AZ_ACCOUNT_NAME"]
+      VGW_ENCRYPTION_KEY_DIRECTORY: /tmp/versitygw-keys
+    command: ["sh", "-c", "install -d -m 700 /tmp/versitygw-keys && if [ ! -f /tmp/versitygw-keys/active.key ]; then dd if=/dev/urandom of=/tmp/versitygw-keys/active.key bs=32 count=1 status=none && chmod 600 /tmp/versitygw-keys/active.key && printf 'active\\n' > /tmp/versitygw-keys/active && chmod 600 /tmp/versitygw-keys/active; fi && exec CompileDaemon -build='go build -C ./cmd/versitygw -buildvcs=false -o versitygw' -command='./cmd/versitygw/versitygw --cert /etc/pki/tls/certs/azurite.pem --key /etc/pki/tls/certs/azurite-key.pem -a $ACCESS_KEY_ID -s $SECRET_ACCESS_KEY --iam-dir $IAM_DIR azure -a $AZ_ACCOUNT_NAME -k $AZ_ACCOUNT_KEY --url https://azurite:10000/$AZ_ACCOUNT_NAME'"]

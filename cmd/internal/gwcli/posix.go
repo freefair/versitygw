@@ -15,29 +15,41 @@
 package gwcli
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"math"
+	"strings"
+	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend/meta"
 	"github.com/versity/versitygw/backend/posix"
+	"github.com/versity/versitygw/internal/encryption"
 )
 
 var (
-	chownuid, chowngid   bool
-	bucketlinks          bool
-	versioningDir        string
-	dirPerms             uint
-	sidecar              string
-	nometa               bool
-	forceNoTmpFile       bool
-	forceNoCopyFileRange bool
-	enableODirect        bool
-	actionsConcurrency   int
-	ioBufferSize         int
-	defaultEtag          string
-	dataIntegrityEtag    bool
+	chownuid, chowngid    bool
+	bucketlinks           bool
+	versioningDir         string
+	dirPerms              uint
+	sidecar               string
+	nometa                bool
+	forceNoTmpFile        bool
+	forceNoCopyFileRange  bool
+	enableODirect         bool
+	actionsConcurrency    int
+	ioBufferSize          int
+	defaultEtag           string
+	dataIntegrityEtag     bool
+	encryptionKeyDir      string
+	encryptionActiveKey   string
+	encryptionKMSProvider string
+	encryptionKMSKeyID    string
+	encryptionKMSTimeout  time.Duration
+	lifecycleArchiveTiers cli.StringSlice
 )
 
 // PosixCommand returns the "posix" subcommand, common to all versitygw
@@ -146,6 +158,43 @@ will be translated into the file /mnt/fs/gwroot/mybucket/a/b/c/myobject`,
 				EnvVars:     []string{"VGW_DATA_INTEGRITY_ETAG"},
 				Destination: &dataIntegrityEtag,
 			},
+			&cli.StringFlag{
+				Name:        "encryption-key-directory",
+				Usage:       "directory containing protected local encryption key files",
+				EnvVars:     []string{"VGW_ENCRYPTION_KEY_DIRECTORY"},
+				Destination: &encryptionKeyDir,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-active-key",
+				Usage:       "active local encryption key ID (defaults to the key directory's active file)",
+				EnvVars:     []string{"VGW_ENCRYPTION_ACTIVE_KEY"},
+				Destination: &encryptionActiveKey,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-kms-provider",
+				Usage:       "SSE-KMS provider: local or aws; AWS configuration is loaded only when aws is selected",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_PROVIDER"},
+				Destination: &encryptionKMSProvider,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-kms-key-id",
+				Usage:       "default AWS KMS key ID or alias",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_KEY_ID"},
+				Destination: &encryptionKMSKeyID,
+			},
+			&cli.DurationFlag{
+				Name:        "encryption-kms-timeout",
+				Usage:       "maximum duration of one AWS KMS operation",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_TIMEOUT"},
+				Value:       10 * time.Second,
+				Destination: &encryptionKMSTimeout,
+			},
+			&cli.StringSliceFlag{
+				Name:        "lifecycle-archive-tier",
+				Usage:       "repeatable STORAGE_CLASS=/absolute/archive/root mapping for POSIX Lifecycle transitions",
+				EnvVars:     []string{"VGW_LIFECYCLE_ARCHIVE_TIERS"},
+				Destination: &lifecycleArchiveTiers,
+			},
 		},
 	}
 }
@@ -185,6 +234,17 @@ func runPosix(ctx *cli.Context) error {
 		DefaultEtag:          defaultEtag,
 		DataIntegrityEtag:    dataIntegrityEtag,
 	}
+	primaryProvider, managedProvider, err := loadEncryptionProviders(ctx.Context)
+	if err != nil {
+		return err
+	}
+	opts.EncryptionProvider = primaryProvider
+	opts.ManagedEncryptionProvider = managedProvider
+	opts.EncryptionKeyDirectory = encryptionKeyDir
+	opts.ArchiveTiers, err = parseArchiveTierFlags(lifecycleArchiveTiers.Value())
+	if err != nil {
+		return err
+	}
 
 	var ms meta.MetadataStorer
 	switch {
@@ -211,4 +271,64 @@ func runPosix(ctx *cli.Context) error {
 	}
 
 	return RunGateway(ctx.Context, be)
+}
+
+func parseArchiveTierFlags(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]string, len(values))
+	for _, value := range values {
+		storageClass, root, found := strings.Cut(value, "=")
+		storageClass = strings.ToUpper(strings.TrimSpace(storageClass))
+		root = strings.TrimSpace(root)
+		if !found || storageClass == "" || root == "" {
+			return nil, fmt.Errorf("invalid lifecycle archive tier %q: expected STORAGE_CLASS=/absolute/path", value)
+		}
+		if _, exists := result[storageClass]; exists {
+			return nil, fmt.Errorf("duplicate lifecycle archive tier %q", storageClass)
+		}
+		result[storageClass] = root
+	}
+	return result, nil
+}
+
+func loadEncryptionProviders(ctx context.Context) (encryption.KeyProvider, encryption.KeyProvider, error) {
+	return loadEncryptionProvidersFrom(ctx, encryptionKeyDir, encryptionActiveKey, encryptionKMSProvider, encryptionKMSKeyID, encryptionKMSTimeout)
+}
+
+func loadEncryptionProvidersFrom(ctx context.Context, keyDirectory, activeKey, kmsProvider, kmsKeyID string, kmsTimeout time.Duration) (encryption.KeyProvider, encryption.KeyProvider, error) {
+	selected := strings.ToLower(strings.TrimSpace(kmsProvider))
+	if keyDirectory == "" {
+		if activeKey != "" || selected != "" || kmsKeyID != "" {
+			return nil, nil, fmt.Errorf("encryption provider settings require encryption-key-directory")
+		}
+		return nil, nil, nil
+	}
+	managed, err := encryption.NewLocalProvider(keyDirectory, activeKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize local encryption provider: %w", err)
+	}
+	if selected == "" || selected == "local" {
+		if kmsKeyID != "" {
+			managed.Close()
+			return nil, nil, fmt.Errorf("encryption-kms-key-id requires encryption-kms-provider=aws")
+		}
+		return managed, managed, nil
+	}
+	if selected != "aws" {
+		managed.Close()
+		return nil, nil, fmt.Errorf("unsupported encryption KMS provider %q", kmsProvider)
+	}
+	awsConfiguration, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		managed.Close()
+		return nil, nil, fmt.Errorf("load AWS configuration for encryption KMS: %w", err)
+	}
+	primary, err := encryption.NewAWSKMSProvider(kms.NewFromConfig(awsConfiguration), kmsKeyID, kmsTimeout)
+	if err != nil {
+		managed.Close()
+		return nil, nil, fmt.Errorf("initialize AWS KMS encryption provider: %w", err)
+	}
+	return primary, managed, nil
 }

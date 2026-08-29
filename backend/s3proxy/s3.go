@@ -464,6 +464,8 @@ func (s *S3Proxy) CreateMultipartUpload(ctx context.Context, input s3response.Cr
 		Bucket:   *out.Bucket,
 		Key:      *out.Key,
 		UploadId: *out.UploadId,
+		Encryption: encryptionResultFromValues(out.ServerSideEncryption, out.SSEKMSKeyId,
+			out.SSECustomerAlgorithm, out.SSECustomerKeyMD5, out.BucketKeyEnabled),
 	}, nil
 }
 
@@ -544,6 +546,8 @@ func (s *S3Proxy) CompleteMultipartUpload(ctx context.Context, input *s3.Complet
 			ChecksumXXHASH3:   out.ChecksumXXHASH3,
 			ChecksumXXHASH128: out.ChecksumXXHASH128,
 			ChecksumType:      &out.ChecksumType,
+			Encryption: encryptionResultFromValues(out.ServerSideEncryption, out.SSEKMSKeyId,
+				input.SSECustomerAlgorithm, input.SSECustomerKeyMD5, out.BucketKeyEnabled),
 		}
 		if out.VersionId != nil {
 			versionid = *out.VersionId
@@ -1020,6 +1024,8 @@ func (s *S3Proxy) PutObject(ctx context.Context, input s3response.PutObjectInput
 		SSECustomerKeyMD5:         input.SSECustomerKeyMD5,
 		SSEKMSEncryptionContext:   input.SSEKMSEncryptionContext,
 		SSEKMSKeyId:               input.SSEKMSKeyId,
+		BucketKeyEnabled:          input.BucketKeyEnabled,
+		ServerSideEncryption:      input.ServerSideEncryption,
 		WebsiteRedirectLocation:   input.WebsiteRedirectLocation,
 	}, s3.WithAPIOptions(
 		v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware,
@@ -1046,6 +1052,7 @@ func (s *S3Proxy) PutObject(ctx context.Context, input s3response.PutObjectInput
 		ChecksumXXHASH64:  output.ChecksumXXHASH64,
 		ChecksumXXHASH3:   output.ChecksumXXHASH3,
 		ChecksumXXHASH128: output.ChecksumXXHASH128,
+		Encryption:        encryptionResultFromPut(output),
 		Size:              output.Size,
 	}, nil
 }

@@ -205,6 +205,16 @@ func initTestCommands() []*cli.Command {
 			Action: getAction(integration.TestScoutfs),
 		},
 		{
+			Name:   "lifecycle",
+			Usage:  "Tests S3 Lifecycle configuration APIs",
+			Action: getAction(integration.TestBucketLifecycle),
+		},
+		{
+			Name:   "encryption",
+			Usage:  "Tests S3 Encryption configuration APIs on an encryption-enabled gateway",
+			Action: getAction(integration.TestBucketEncryption),
+		},
+		{
 			Name:   "gw-iam",
 			Usage:  "Tests gateway IAM service integration",
 			Action: getAction(integration.TestGatewayIAM),

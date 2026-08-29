@@ -21,6 +21,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/versity/versitygw/internal/encryption"
+	"github.com/versity/versitygw/internal/lifecycle"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
 	"github.com/versity/versitygw/s3select"
@@ -53,6 +55,14 @@ type Backend interface {
 	PutBucketWebsite(_ context.Context, bucket string, website []byte) error
 	GetBucketWebsite(_ context.Context, bucket string) ([]byte, error)
 	DeleteBucketWebsite(_ context.Context, bucket string) error
+	LifecycleCapabilities() lifecycle.Capabilities
+	PutLifecycleConfiguration(context.Context, string, lifecycle.Configuration) error
+	GetLifecycleConfiguration(context.Context, string) (lifecycle.Configuration, error)
+	DeleteLifecycleConfiguration(context.Context, string) error
+	EncryptionCapabilities() encryption.Capabilities
+	PutEncryptionConfiguration(context.Context, string, encryption.Configuration) error
+	GetEncryptionConfiguration(context.Context, string) (encryption.Configuration, error)
+	DeleteEncryptionConfiguration(context.Context, string) error
 
 	// multipart operations
 	CreateMultipartUpload(context.Context, s3response.CreateMultipartUploadInput) (s3response.InitiateMultipartUploadResult, error)
@@ -176,6 +186,38 @@ func (BackendUnsupported) GetBucketWebsite(_ context.Context, bucket string) ([]
 	return nil, s3err.GetAPIError(s3err.ErrNotImplemented)
 }
 func (BackendUnsupported) DeleteBucketWebsite(_ context.Context, bucket string) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+
+func (BackendUnsupported) LifecycleCapabilities() lifecycle.Capabilities {
+	return lifecycle.Capabilities{}
+}
+
+func (BackendUnsupported) PutLifecycleConfiguration(context.Context, string, lifecycle.Configuration) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+
+func (BackendUnsupported) GetLifecycleConfiguration(context.Context, string) (lifecycle.Configuration, error) {
+	return lifecycle.Configuration{}, s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+
+func (BackendUnsupported) DeleteLifecycleConfiguration(context.Context, string) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+
+func (BackendUnsupported) EncryptionCapabilities() encryption.Capabilities {
+	return encryption.Capabilities{}
+}
+
+func (BackendUnsupported) PutEncryptionConfiguration(context.Context, string, encryption.Configuration) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+
+func (BackendUnsupported) GetEncryptionConfiguration(context.Context, string) (encryption.Configuration, error) {
+	return encryption.Configuration{}, s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+
+func (BackendUnsupported) DeleteEncryptionConfiguration(context.Context, string) error {
 	return s3err.GetAPIError(s3err.ErrNotImplemented)
 }
 

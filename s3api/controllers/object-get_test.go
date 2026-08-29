@@ -16,10 +16,13 @@ package controllers
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -660,6 +663,48 @@ func TestS3ApiController_GetObjectAttributes(t *testing.T) {
 					queries: tt.input.queries,
 				})
 		})
+	}
+}
+
+func TestGetObjectAttributesForwardsSSECustomerKey(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	digest := md5.Sum(key)
+	encodedKey := base64.StdEncoding.EncodeToString(key)
+	encodedDigest := base64.StdEncoding.EncodeToString(digest[:])
+	var captured *s3.GetObjectAttributesInput
+	backend := &BackendMock{
+		GetObjectAttributesFunc: func(_ context.Context, input *s3.GetObjectAttributesInput) (s3response.GetObjectAttributesResponse, error) {
+			captured = input
+			return s3response.GetObjectAttributesResponse{}, nil
+		},
+		GetBucketPolicyFunc: func(_ context.Context, _ string) ([]byte, error) {
+			return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
+		},
+	}
+	controller := S3ApiController{
+		be: backend,
+		trustedProxyPrefixes: []netip.Prefix{
+			netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0"),
+		},
+	}
+	testController(t, controller.GetObjectAttributes, &Response{
+		Headers:  map[string]*string{"x-amz-version-id": nil, "Last-Modified": nil},
+		Data:     s3response.GetObjectAttributesResponse{},
+		MetaOpts: &MetaOptions{BucketOwner: "root"},
+	}, nil, ctxInputs{
+		locals: defaultLocals,
+		headers: map[string]string{
+			"X-Amz-Object-Attributes":                         "ETag",
+			"X-Forwarded-Proto":                               "https",
+			"x-amz-server-side-encryption-customer-algorithm": "AES256",
+			"x-amz-server-side-encryption-customer-key":       encodedKey,
+			"x-amz-server-side-encryption-customer-key-MD5":   encodedDigest,
+		},
+	})
+	if captured == nil || captured.SSECustomerAlgorithm == nil || *captured.SSECustomerAlgorithm != "AES256" ||
+		captured.SSECustomerKey == nil || *captured.SSECustomerKey != encodedKey ||
+		captured.SSECustomerKeyMD5 == nil || *captured.SSECustomerKeyMD5 != encodedDigest {
+		t.Fatalf("backend input did not receive SSE-C headers: %#v", captured)
 	}
 }
 

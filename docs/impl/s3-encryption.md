@@ -296,7 +296,7 @@ The AWS provider uses the official AWS SDK for Go v2 KMS client.
 
 It uses `GenerateDataKey` for writes and `Decrypt` for reads.
 
-It passes the normalized S3 encryption context and records the exact context required for future decrypt operations.
+It decodes the S3 header as a JSON object of string pairs, passes every client pair as an actual AWS KMS Encryption Context entry, and records the exact client context required for future decrypt and rewrap operations. An additional reserved `versitygw:object-binding` entry carries the authenticated container identity and layer binding; client input using that key is rejected. This follows the AWS [S3 encryption-context contract](https://docs.aws.amazon.com/AmazonS3/latest/userguide/specifying-kms-encryption.html) and [KMS `EncryptionContext` map](https://docs.aws.amazon.com/kms/latest/cryptographic-details/generating-data-keys.html), retrieved 2026-08-28.
 
 For general purpose buckets, `PutBucketEncryption` does not call AWS KMS to validate the supplied key ID because Amazon S3 deliberately defers that failure to object use.
 
@@ -381,6 +381,12 @@ Existing objects continue to decrypt with their recorded key ID.
 
 An optional rewrap operation replaces only wrapped data keys and manifests, not object ciphertext.
 
+For archived objects, rewrap and legacy re-encryption snapshot the prior bytes,
+object metadata, and recovery manifest. If any metadata or manifest publication
+fails after the new archive bytes are renamed into place, the operation restores
+the snapshot before returning an error; a reported failure therefore does not
+leave old hashes pointing at new bytes.
+
 The plan does not remove an old key until a verified reference scan reports zero dependent objects and versions.
 
 Key backup and restore are mandatory operational documentation.
@@ -457,7 +463,7 @@ UploadPart requires the same SSE-C headers used at initiation when the upload us
 | `GetBucketEncryption` | Return effective default, Bucket Key state, and blocked types |
 | `DeleteBucketEncryption` | Reset to SSE-S3 |
 | `PutObject` | Resolve explicit headers over bucket default, encrypt, and return SSE headers |
-| `POSTObject` | Parse form fields, enforce POST policy conditions, and encrypt |
+| `POSTObject` | Parse form fields, enforce POST policy conditions, derive the exact file length through an ephemeral authenticated-encryption spool, and pass plaintext only as a stream to the backend |
 | `CreateMultipartUpload` | Resolve encryption once and persist upload encryption state |
 | `UploadPart` | Enforce matching SSE-C headers and encrypt the part at rest |
 | `UploadPartCopy` | Decrypt source as required and enforce destination upload encryption |
@@ -621,6 +627,7 @@ Tests verify observable behavior and corruption rejection rather than duplicatin
 - `AES256` plus `BucketKeyEnabled=true` is accepted and echoed without changing SSE-S3 cryptography; DSSE plus Bucket Keys is rejected.
 - `GetBucketEncryption` returns 501 in capability-absent and audit modes and returns the exact default XML only after encryption is enabled.
 - POST policy and bucket-policy encryption conditions.
+- Browser POST temporary storage contains only AES-256-GCM ciphertext under an in-memory one-request key; POSIX unlinks the open spool immediately, cleanup removes named files on other platforms, and tampering fails authentication.
 - Exact response headers for every operation.
 - Debug logs and errors contain no customer key or local key bytes.
 
@@ -671,7 +678,7 @@ The backend continues to read those objects as legacy plaintext during migration
 
 Buckets created after the feature is enabled start with SSE-C writes blocked, matching the AWS April 2026 default cited in [Compatibility Scope](#compatibility-scope).
 
-Pre-existing buckets retain an explicit migration state until a bounded inventory determines whether SSE-C objects exist, rather than silently changing their write policy.
+Pre-existing buckets with no stored Encryption marker resolve to SSE-S3 with `BlockedEncryptionTypes=NONE` until a bounded inventory determines whether SSE-C objects exist, rather than silently changing their write policy. `CreateBucket` persists the new-bucket SSE-S3 plus SSE-C-blocked default. `DeleteBucketEncryption` also persists that new-bucket default instead of removing the marker and accidentally returning the bucket to legacy state.
 
 Once Encryption is enabled for a local backend, every new write receives at least SSE-S3 according to the effective bucket default.
 

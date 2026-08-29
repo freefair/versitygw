@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend/scoutfs"
@@ -120,6 +121,43 @@ move interfaces as well as support for tiered filesystems.`,
 				EnvVars:     []string{"VGW_DATA_INTEGRITY_ETAG"},
 				Destination: &dataIntegrityEtag,
 			},
+			&cli.StringFlag{
+				Name:        "encryption-key-directory",
+				Usage:       "directory containing protected local encryption key files",
+				EnvVars:     []string{"VGW_ENCRYPTION_KEY_DIRECTORY"},
+				Destination: &encryptionKeyDir,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-active-key",
+				Usage:       "active local encryption key ID (defaults to the key directory's active file)",
+				EnvVars:     []string{"VGW_ENCRYPTION_ACTIVE_KEY"},
+				Destination: &encryptionActiveKey,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-kms-provider",
+				Usage:       "SSE-KMS provider: local or aws; AWS configuration is loaded only when aws is selected",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_PROVIDER"},
+				Destination: &encryptionKMSProvider,
+			},
+			&cli.StringFlag{
+				Name:        "encryption-kms-key-id",
+				Usage:       "default AWS KMS key ID or alias",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_KEY_ID"},
+				Destination: &encryptionKMSKeyID,
+			},
+			&cli.DurationFlag{
+				Name:        "encryption-kms-timeout",
+				Usage:       "maximum duration of one AWS KMS operation",
+				EnvVars:     []string{"VGW_ENCRYPTION_KMS_TIMEOUT"},
+				Value:       10 * time.Second,
+				Destination: &encryptionKMSTimeout,
+			},
+			&cli.StringSliceFlag{
+				Name:        "lifecycle-archive-tier",
+				Usage:       "repeatable STORAGE_CLASS=/absolute/archive/root mapping for gateway-managed Lifecycle transitions",
+				EnvVars:     []string{"VGW_LIFECYCLE_ARCHIVE_TIERS"},
+				Destination: &lifecycleArchiveTiers,
+			},
 		},
 	}
 }
@@ -151,6 +189,17 @@ func runScoutfs(ctx *cli.Context) error {
 	opts.CopyObjectThreshold = CopyObjectThreshold
 	opts.DefaultEtag = defaultEtag
 	opts.DataIntegrityEtag = dataIntegrityEtag
+	primaryProvider, managedProvider, err := loadEncryptionProviders(ctx.Context)
+	if err != nil {
+		return err
+	}
+	opts.EncryptionProvider = primaryProvider
+	opts.ManagedEncryptionProvider = managedProvider
+	opts.EncryptionKeyDirectory = encryptionKeyDir
+	opts.ArchiveTiers, err = parseArchiveTierFlags(lifecycleArchiveTiers.Value())
+	if err != nil {
+		return err
+	}
 
 	be, err := scoutfs.New(ctx.Args().Get(0), opts)
 	if err != nil {

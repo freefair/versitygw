@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 	"github.com/versity/versitygw/backend/meta"
 	"github.com/versity/versitygw/backend/posix"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/internal/lifecycle"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
 )
@@ -75,16 +77,21 @@ func New(rootdir string, opts ScoutfsOpts) (*ScoutFS, error) {
 	metastore := meta.XattrMeta{}
 
 	p, err := posix.New(rootdir, metastore, posix.PosixOpts{
-		ChownUID:            opts.ChownUID,
-		ChownGID:            opts.ChownGID,
-		BucketLinks:         opts.BucketLinks,
-		NewDirPerm:          opts.NewDirPerm,
-		VersioningDir:       opts.VersioningDir,
-		ValidateBucketNames: opts.ValidateBucketNames,
-		Concurrency:         opts.Concurrency,
-		CopyObjectThreshold: opts.CopyObjectThreshold,
-		DefaultEtag:         opts.DefaultEtag,
-		DataIntegrityEtag:   opts.DataIntegrityEtag,
+		ChownUID:                  opts.ChownUID,
+		ChownGID:                  opts.ChownGID,
+		BucketLinks:               opts.BucketLinks,
+		NewDirPerm:                opts.NewDirPerm,
+		VersioningDir:             opts.VersioningDir,
+		ValidateBucketNames:       opts.ValidateBucketNames,
+		Concurrency:               opts.Concurrency,
+		CopyObjectThreshold:       opts.CopyObjectThreshold,
+		DefaultEtag:               opts.DefaultEtag,
+		DataIntegrityEtag:         opts.DataIntegrityEtag,
+		EncryptionProvider:        opts.EncryptionProvider,
+		ManagedEncryptionProvider: opts.ManagedEncryptionProvider,
+		EncryptionKeyDirectory:    opts.EncryptionKeyDirectory,
+		ArchiveTiers:              opts.ArchiveTiers,
+		AtomicFileLocks:           true,
 	})
 	if err != nil {
 		return nil, err
@@ -145,6 +152,96 @@ const (
 func (s *ScoutFS) Shutdown() {
 	s.Posix.Shutdown()
 	s.rootfd.Close()
+}
+
+func (s *ScoutFS) AcquireLifecycleLease(ctx context.Context, bucket string) (io.Closer, error) {
+	if err := s.requireLifecycleLeader(); err != nil {
+		return nil, err
+	}
+	lease, err := s.Posix.AcquireLifecycleLease(ctx, bucket)
+	if err != nil {
+		return nil, err
+	}
+	err = s.requireLifecycleLeader()
+	if err != nil {
+		_ = lease.Close()
+		return nil, err
+	}
+	return lease, nil
+}
+
+func (s *ScoutFS) ApplyLifecycleAction(ctx context.Context, action lifecycle.Action) error {
+	if err := s.requireLifecycleLeader(); err != nil {
+		return err
+	}
+	if action.Kind == lifecycle.ActionTransition && action.TargetStorageClass == "GLACIER" {
+		return s.Posix.TransitionLifecycleObjectGuarded(ctx, action, func(path string) error {
+			if err := s.requireLifecycleLeader(); err != nil {
+				return err
+			}
+			state, err := scoutfs.StatMore(path)
+			if err != nil {
+				return err
+			}
+			if state.Offline_blocks != 0 {
+				return nil
+			}
+			if err := s.requireLifecycleLeader(); err != nil {
+				return err
+			}
+			return scoutfs.ReleaseFile(path, state.Data_version)
+		}, s.requireLifecycleLeader)
+	}
+	return s.Posix.ApplyLifecycleActionWithGuard(ctx, action, s.requireLifecycleLeader)
+}
+
+func (s *ScoutFS) ReconcileLifecycle(ctx context.Context, bucket string) error {
+	if err := s.requireLifecycleLeader(); err != nil {
+		return err
+	}
+	return s.Posix.ReconcileLifecycleWithNativeReleaseGuard(ctx, bucket, func(path string) (bool, error) {
+		state, err := scoutfs.StatMore(path)
+		return err == nil && state.Offline_blocks != 0, err
+	}, func(path string) error {
+		if err := s.requireLifecycleLeader(); err != nil {
+			return err
+		}
+		state, err := scoutfs.StatMore(path)
+		if err != nil {
+			return err
+		}
+		if err := s.requireLifecycleLeader(); err != nil {
+			return err
+		}
+		return scoutfs.ReleaseFile(path, state.Data_version)
+	}, s.requireLifecycleLeader)
+}
+
+func (s *ScoutFS) requireLifecycleLeader() error {
+	leader, err := s.lifecycleLeader()
+	if err != nil {
+		return err
+	}
+	if !leader {
+		return lifecycle.ErrLeaseUnavailable
+	}
+	return nil
+}
+
+func (s *ScoutFS) lifecycleLeader() (bool, error) {
+	ids, err := scoutfs.GetIDs(s.rootfd)
+	if err != nil {
+		return false, fmt.Errorf("get ScoutFS IDs for lifecycle leadership: %w", err)
+	}
+	body, err := os.ReadFile(filepath.Join(sysscoutfs, ids.ShortID, "quorum", "is_leader"))
+	if err != nil {
+		return false, fmt.Errorf("read ScoutFS lifecycle leader state: %w", err)
+	}
+	value := strings.TrimSpace(string(body))
+	if value != "0" && value != "1" {
+		return false, fmt.Errorf("invalid ScoutFS lifecycle leader state %q", value)
+	}
+	return value == "1", nil
 }
 
 func (*ScoutFS) String() string {
@@ -224,8 +321,10 @@ func (s *ScoutFS) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s
 			}
 		}
 
-		res.Restore = &requestOngoing
-		res.StorageClass = stclass
+		if res.StorageClass == types.StorageClassStandard {
+			res.Restore = &requestOngoing
+			res.StorageClass = stclass
+		}
 	}
 
 	return res, nil
@@ -426,7 +525,46 @@ func (s *ScoutFS) glacierFileToObj(bucket string, fetchOwner bool) backend.GetOb
 
 // RestoreObject will set stage request on file if offline and do nothing if
 // file is online
-func (s *ScoutFS) RestoreObject(_ context.Context, input *s3.RestoreObjectInput) error {
+func (s *ScoutFS) RestoreObject(ctx context.Context, input *s3.RestoreObjectInput) error {
+	if err := s.Posix.RestoreLifecycleObject(ctx, input, func(path string, source io.Reader, size int64) (int64, error) {
+		if size == 0 {
+			return 0, nil
+		}
+		state, err := scoutfs.StatMore(path)
+		if err != nil {
+			return 0, err
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return 0, err
+		}
+		defer file.Close()
+		buffer := make([]byte, 1024*1024)
+		var offset int64
+		for offset < size {
+			if err := ctx.Err(); err != nil {
+				return offset, err
+			}
+			length := min(int64(len(buffer)), size-offset)
+			read, err := io.ReadFull(source, buffer[:length])
+			if err != nil {
+				return offset, err
+			}
+			staged, err := scoutfs.FStageFile(file, state.Data_version, uint64(offset), buffer[:read])
+			if err != nil {
+				return offset, err
+			}
+			if staged != read {
+				return offset, io.ErrShortWrite
+			}
+			offset += int64(staged)
+		}
+		return offset, nil
+	}); err == nil {
+		return nil
+	} else if !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidObjectState)) {
+		return err
+	}
 	bucket := *input.Bucket
 	object := *input.Key
 

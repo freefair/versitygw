@@ -1,0 +1,11 @@
+---
+- name: Restart test gateways
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop:
+    - versitygw-nfs.service
+    - versitygw-scoutfs.service
+  when: item != 'versitygw-nfs.service' or inventory_hostname in ['node-a', 'node-b']
+  failed_when: false

@@ -27,15 +27,18 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/internal/lifecycle"
 	"github.com/versity/versitygw/internal/netutil"
 	"github.com/versity/versitygw/metrics"
 	"github.com/versity/versitygw/s3api"
@@ -60,6 +63,15 @@ type Config struct {
 	// Region is the AWS region name reported to S3 clients (e.g. "us-east-1").
 	// Defaults to "us-east-1" when empty.
 	Region string
+
+	// LifecycleInterval controls catch-up scans for backends where the gateway
+	// owns Lifecycle execution. Zero selects one hour.
+	LifecycleInterval time.Duration
+	// LifecycleDryRun evaluates and reports eligible actions without mutation.
+	LifecycleDryRun bool
+	// TrustedProxyCIDRs identifies immediate reverse proxies whose single
+	// X-Forwarded-Proto header may establish SSE-C transport security.
+	TrustedProxyCIDRs []string
 
 	// Ports is the list of S3 API listening addresses. Each entry can be
 	// "host:port" to bind a specific interface, or ":port" to bind all
@@ -553,6 +565,9 @@ func RunVersityGW(ctx context.Context, be backend.Backend, cfg *Config) error {
 	if cfg.MultipartMaxParts < 1 {
 		return fmt.Errorf("mp-max-parts must be positive")
 	}
+	if cfg.LifecycleInterval < 0 {
+		return fmt.Errorf("lifecycle interval must not be negative")
+	}
 
 	if len(cfg.Ports) == 0 {
 		return fmt.Errorf("no ports specified")
@@ -640,6 +655,17 @@ func RunVersityGW(ctx context.Context, be backend.Backend, cfg *Config) error {
 	opts := []s3api.Option{
 		s3api.WithConcurrencyLimiter(cfg.MaxConnections, cfg.MaxRequests),
 		s3api.WithMpMaxParts(cfg.MultipartMaxParts),
+	}
+	if len(cfg.TrustedProxyCIDRs) != 0 {
+		trustedProxyPrefixes := make([]netip.Prefix, 0, len(cfg.TrustedProxyCIDRs))
+		for _, value := range cfg.TrustedProxyCIDRs {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil {
+				return fmt.Errorf("invalid trusted proxy CIDR %q: %w", value, err)
+			}
+			trustedProxyPrefixes = append(trustedProxyPrefixes, prefix.Masked())
+		}
+		opts = append(opts, s3api.WithTrustedProxyPrefixes(trustedProxyPrefixes))
 	}
 	if cfg.SocketPerm != "" {
 		opts = append(opts, s3api.WithSocketPerm(parsedSocketPerm))
@@ -1065,6 +1091,30 @@ func RunVersityGW(ctx context.Context, be backend.Backend, cfg *Config) error {
 		go func() { c <- wsSrv.ServeMultiPort(cfg.WebsitePorts) }()
 	}
 
+	var lifecycleCancel context.CancelFunc
+	var lifecycleDone <-chan struct{}
+	if executor, ok := be.(lifecycle.Executor); ok {
+		interval := cfg.LifecycleInterval
+		if interval == 0 {
+			interval = time.Hour
+		}
+		coordinatorCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		lifecycleCancel, lifecycleDone = cancel, done
+		observer := newLifecycleObserver(coordinatorCtx, be.String(), cfg.Region, metricsManager, evSender)
+		coordinator := &lifecycle.Coordinator{
+			Store: be, Executor: executor, PageSize: 1000, DryRun: cfg.LifecycleDryRun,
+			Observe: observer.ObserveAction, ObserveScan: observer.ObserveScan,
+			OnScanError: func(err error) { log.Printf("lifecycle scan failed: %v", err) },
+		}
+		go func() {
+			defer close(done)
+			if err := coordinator.Run(coordinatorCtx, interval); err != nil {
+				log.Printf("lifecycle coordinator stopped: %v", err)
+			}
+		}()
+	}
+
 	// build a nil-safe sighup channel so the select below is always valid
 	var sigHup <-chan struct{}
 	if cfg.SigHup != nil {
@@ -1130,6 +1180,10 @@ Loop:
 		}
 	}
 	saveErr := err
+	if lifecycleCancel != nil {
+		lifecycleCancel()
+		<-lifecycleDone
+	}
 
 	err = srv.ShutDown()
 	if err != nil {

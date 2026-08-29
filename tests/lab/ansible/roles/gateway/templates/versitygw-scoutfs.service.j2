@@ -1,0 +1,17 @@
+[Unit]
+Description=VersityGW ScoutFS Lifecycle and Encryption lab
+After=network-online.target remote-fs.target
+Wants=network-online.target
+RequiresMountsFor={{ nfs_mount_path }} {{ scoutfs_mount_path }}
+
+[Service]
+Type=simple
+EnvironmentFile={{ versitygw_config_path }}/gateway.env
+ExecStart={{ versitygw_binary_path }} --port :{{ versitygw_scoutfs_port }} --lifecycle-interval 1s scoutfs --glacier --versioning-dir {{ versitygw_scoutfs_version_root }} --encryption-key-directory {{ versitygw_key_path }} --lifecycle-archive-tier GLACIER={{ versitygw_scoutfs_archive_root }} {{ versitygw_scoutfs_root }}
+Restart=on-failure
+RestartSec=1s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

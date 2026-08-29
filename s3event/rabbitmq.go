@@ -15,6 +15,7 @@
 package s3event
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -113,6 +114,15 @@ func (rs *RabbitmqEventSender) SendEvent(ctx fiber.Ctx, meta EventMeta) {
 
 	schema := createEventSchema(ctx, meta, ConfigurationIdRabbitMQ)
 	go rs.send(schema)
+}
+
+func (rs *RabbitmqEventSender) SendBackgroundEvent(_ context.Context, meta BackgroundEventMeta) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.filter != nil && !rs.filter.Filter(meta.EventName) {
+		return
+	}
+	go rs.send(createBackgroundEventSchema(meta, ConfigurationIdRabbitMQ))
 }
 
 func (rs *RabbitmqEventSender) Close() error {

@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -274,8 +275,9 @@ func (m *mockAuditLogger) Shutdown() error                                     {
 type mockEvSender struct {
 }
 
-func (m *mockEvSender) SendEvent(_ fiber.Ctx, _ s3event.EventMeta) {}
-func (m *mockEvSender) Close() error                               { return nil }
+func (m *mockEvSender) SendEvent(_ fiber.Ctx, _ s3event.EventMeta)                           {}
+func (m *mockEvSender) SendBackgroundEvent(_ context.Context, _ s3event.BackgroundEventMeta) {}
+func (m *mockEvSender) Close() error                                                         { return nil }
 
 // mock metrics manager
 

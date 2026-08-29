@@ -63,7 +63,7 @@ func (az *Azure) copySourceURL(ctx context.Context, srcBucket, srcObj string) (s
 	}
 
 	if az.defaultCreds != nil {
-		svcClient, err := service.NewClient(az.serviceURL, az.defaultCreds, nil)
+		svcClient, err := service.NewClient(az.serviceURL, az.defaultCreds, &service.ClientOptions{ClientOptions: az.clientOptions})
 		if err != nil {
 			return "", fmt.Errorf("init service client: %w", err)
 		}

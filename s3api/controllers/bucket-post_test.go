@@ -21,14 +21,17 @@ import (
 	"encoding/xml"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/versity/versitygw/auth"
+	"github.com/versity/versitygw/internal/encryption"
 	"github.com/versity/versitygw/s3api/middlewares"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -239,6 +242,66 @@ func TestS3ApiController_DeleteObjects(t *testing.T) {
 					body:   tt.input.body,
 				})
 		})
+	}
+}
+
+type encryptionActiveBackendMock struct{ *BackendMock }
+
+func (*encryptionActiveBackendMock) EncryptionActive() bool { return true }
+
+func TestPOSTObjectResolvesFormEncryptionAndReturnsHeaders(t *testing.T) {
+	bucket := "bucket"
+	backend := &encryptionActiveBackendMock{BackendMock: &BackendMock{
+		EncryptionCapabilitiesFunc: func() encryption.Capabilities {
+			return encryption.Capabilities{SSES3: true, SSEC: true}
+		},
+		GetEncryptionConfigurationFunc: func(context.Context, string) (encryption.Configuration, error) {
+			return encryption.DefaultConfiguration(), nil
+		},
+		PutObjectFunc: func(_ context.Context, input s3response.PutObjectInput) (s3response.PutObjectOutput, error) {
+			if input.Encryption == nil || input.Encryption.Mode != encryption.ModeSSES3 {
+				t.Fatalf("PutObject encryption = %#v", input.Encryption)
+			}
+			body, err := io.ReadAll(input.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := *input.ContentLength, int64(len(body)); got != want {
+				t.Fatalf("PutObject content length = %d, want spooled size %d", got, want)
+			}
+			return s3response.PutObjectOutput{ETag: "etag", Encryption: &encryption.Result{Mode: encryption.ModeSSES3}}, nil
+		},
+		GetBucketPolicyFunc: func(context.Context, string) ([]byte, error) {
+			return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
+		},
+	}}
+	controller := S3ApiController{be: backend}
+	app := fiber.New()
+	app.Post("/:bucket/*", func(ctx fiber.Ctx) error {
+		utils.ContextKeyIsRoot.Set(ctx, true)
+		utils.ContextKeyParsedAcl.Set(ctx, auth.ACL{Owner: "root"})
+		utils.ContextKeyAccount.Set(ctx, auth.Account{Access: "root", Role: auth.RoleAdmin})
+		utils.ContextKeyPublicBucket.Set(ctx, true)
+		utils.ContextKeyObjectPostResult.Set(ctx, middlewares.PostObjectResult{
+			Fields:  map[string]string{"key": "object", "x-amz-server-side-encryption": "AES256"},
+			FileRdr: newMockFileReader("payload"), ContentLength: 42,
+		})
+		response, err := controller.POSTObject(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Headers["x-amz-server-side-encryption"] == nil || *response.Headers["x-amz-server-side-encryption"] != "AES256" {
+			t.Fatalf("POST response encryption headers = %#v", response.Headers)
+		}
+		return ctx.SendStatus(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/"+bucket+"/", nil)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d", response.StatusCode)
 	}
 }
 

@@ -8,6 +8,25 @@
 
  [![Apache V2 License](https://img.shields.io/badge/license-Apache%20V2-blue.svg)](https://github.com/versity/versitygw/blob/main/LICENSE) [![Go Reference](https://pkg.go.dev/badge/github.com/versity/versitygw.svg)](https://pkg.go.dev/github.com/versity/versitygw)
 
+## Quick Start
+
+From a fresh clone with Go and `make` installed:
+
+```bash
+make
+mkdir -p /tmp/versitygw-data /tmp/versitygw-iam /tmp/versitygw-versions
+ROOT_ACCESS_KEY=testuser ROOT_SECRET_KEY=secret \
+  ./versitygw --port :10000 --health /healthz \
+  --iam-dir /tmp/versitygw-iam posix \
+  --versioning-dir /tmp/versitygw-versions /tmp/versitygw-data &
+VGW_PID=$!
+trap 'kill "$VGW_PID"' EXIT
+until curl --fail --silent http://127.0.0.1:10000/healthz; do sleep 0.2; done
+```
+
+The health request verifies the running listener. Use an S3 client with the
+example credentials for a signed end-to-end request.
+
 ### Binary release builds
 Download [latest release](https://github.com/versity/versitygw/releases)
  | Linux amd64/arm64 | MacOS amd64/arm64 | BSD amd64/arm64 | Windows amd64/arm64 |
@@ -48,9 +67,12 @@ See project [documentation](https://github.com/versity/versitygw/wiki) on the wi
 
 Implementation references for the Lifecycle and Encryption work in this repository:
 
+- [S3 Lifecycle operation guide](docs/s3-lifecycle.md)
+- [S3 server-side encryption operation guide](docs/s3-encryption.md)
 - [Lifecycle and Encryption inventory](docs/impl/s3-lifecycle-encryption-inventory.md)
 - [Amazon S3-compatible Lifecycle implementation plan](docs/impl/s3-lifecycle.md)
 - [Amazon S3-compatible Encryption implementation plan](docs/impl/s3-encryption.md)
+- [Temporary NFS and ScoutFS verification lab](tests/lab/README.md)
 
 ### Need help?
 Ask questions in the [community discussions](https://github.com/versity/versitygw/discussions).

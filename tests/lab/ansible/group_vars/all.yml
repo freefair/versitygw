@@ -4,13 +4,25 @@ nfs_export_path: /srv/versitygw-nfs
 nfs_filesystem_label: vgw-lab-nfs
 lock_test_directory_name: .versitygw-locks
 scoutfs_mount_path: /mnt/scoutfs
-scoutfs_source_version: v1.33
+scoutfs_source_version: 8d77e81091af51fdf4a9a9febcdafcfbda1e4ffd
 scoutfs_source_path: /usr/local/src/scoutfs
 scoutfs_target_iqn: iqn.2026-08.io.freefair.versitygw:scoutfs
 scoutfs_port: 53000
 storage_nfs_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_NFSDATA
 storage_scoutfs_meta_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_SCOUTFSMETA
 storage_scoutfs_data_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_SCOUTFSDATA
+versitygw_binary_path: /usr/local/bin/versitygw
+versitygw_probe_path: /usr/local/bin/versitygw-lab-s3probe
+versitygw_config_path: /etc/versitygw-lab
+versitygw_key_path: /etc/versitygw-lab/keys
+versitygw_nfs_port: 7070
+versitygw_nfs_root: /mnt/nfs/versitygw/nfs-data
+versitygw_nfs_version_root: /mnt/nfs/versitygw/nfs-versions
+versitygw_nfs_archive_root: /mnt/nfs/versitygw/nfs-archive
+versitygw_scoutfs_port: 7071
+versitygw_scoutfs_root: /mnt/scoutfs/versitygw/scoutfs-data
+versitygw_scoutfs_version_root: /mnt/scoutfs/versitygw/scoutfs-versions
+versitygw_scoutfs_archive_root: /mnt/nfs/versitygw/scoutfs-archive
 scoutfs_meta_device: >-
   /dev/disk/by-path/ip-{{ lab_storage_ip }}:3260-iscsi-{{ scoutfs_target_iqn }}-lun-0
 scoutfs_data_device: >-

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend"
@@ -105,6 +106,9 @@ var (
 	websiteNoTLS                                  bool
 	disableACLs                                   bool
 	mpMaxParts                                    int
+	lifecycleInterval                             time.Duration
+	lifecycleDryRun                               bool
+	trustedProxyCIDRs                             []string
 	socketPerm                                    string
 )
 
@@ -168,6 +172,7 @@ documentation can be found in the GitHub wiki.`,
 			webuiIAMGateways = ctx.StringSlice("webui-iam-gateways")
 			webuiPathPrefix = ctx.String("webui-path-prefix")
 			websitePorts = ctx.StringSlice("website")
+			trustedProxyCIDRs = ctx.StringSlice("trusted-proxy-cidr")
 
 			// Resolve relative UNIX socket paths to absolute before any backend
 			// (e.g. posix) can change the working directory via os.Chdir.
@@ -322,6 +327,24 @@ func initFlags() []cli.Flag {
 			Value:       250000,
 			Destination: &maxConnections,
 			Aliases:     []string{"mc"},
+		},
+		&cli.DurationFlag{
+			Name:        "lifecycle-interval",
+			Usage:       "interval between S3 Lifecycle scans (a catch-up scan also runs at startup)",
+			EnvVars:     []string{"VGW_LIFECYCLE_INTERVAL"},
+			Value:       time.Hour,
+			Destination: &lifecycleInterval,
+		},
+		&cli.BoolFlag{
+			Name:        "lifecycle-dry-run",
+			Usage:       "evaluate S3 Lifecycle actions without mutating objects",
+			EnvVars:     []string{"VGW_LIFECYCLE_DRY_RUN"},
+			Destination: &lifecycleDryRun,
+		},
+		&cli.StringSliceFlag{
+			Name:    "trusted-proxy-cidr",
+			Usage:   "trusted immediate reverse-proxy CIDR allowed to assert X-Forwarded-Proto for SSE-C (repeatable)",
+			EnvVars: []string{"VGW_TRUSTED_PROXY_CIDR"},
 		},
 		&cli.IntFlag{
 			Name:        "max-requests",
@@ -933,6 +956,9 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		AdminMaxConnections:         adminMaxConnections,
 		AdminMaxRequests:            adminMaxRequests,
 		MultipartMaxParts:           mpMaxParts,
+		LifecycleInterval:           lifecycleInterval,
+		LifecycleDryRun:             lifecycleDryRun,
+		TrustedProxyCIDRs:           trustedProxyCIDRs,
 		CertFile:                    certFile,
 		KeyFile:                     keyFile,
 		AdminCertFile:               admCertFile,

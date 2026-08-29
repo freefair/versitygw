@@ -283,26 +283,36 @@ func (c S3ApiController) UploadPart(ctx fiber.Ctx) (*Response, error) {
 	} else {
 		body = bytes.NewReader([]byte{})
 	}
+	readEncryption, err := c.parseReadCustomerEncryption(ctx, false)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if readEncryption != nil {
+		defer readEncryption.CustomerKey.Destroy()
+	}
 
 	res, err := c.be.UploadPart(ctx.RequestCtx(),
 		&s3.UploadPartInput{
-			Bucket:            &bucket,
-			Key:               &key,
-			UploadId:          &uploadId,
-			PartNumber:        &partNumber,
-			ContentLength:     &contentLength,
-			Body:              body,
-			ChecksumAlgorithm: algorithm,
-			ChecksumCRC32:     utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32]),
-			ChecksumCRC32C:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32c]),
-			ChecksumSHA1:      utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha1]),
-			ChecksumSHA256:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha256]),
-			ChecksumCRC64NVME: utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc64nvme]),
-			ChecksumSHA512:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha512]),
-			ChecksumMD5:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmMd5]),
-			ChecksumXXHASH64:  utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash64]),
-			ChecksumXXHASH3:   utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash3]),
-			ChecksumXXHASH128: utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash128]),
+			Bucket:               &bucket,
+			Key:                  &key,
+			UploadId:             &uploadId,
+			PartNumber:           &partNumber,
+			ContentLength:        &contentLength,
+			Body:                 body,
+			ChecksumAlgorithm:    algorithm,
+			ChecksumCRC32:        utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32]),
+			ChecksumCRC32C:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32c]),
+			ChecksumSHA1:         utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha1]),
+			ChecksumSHA256:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha256]),
+			ChecksumCRC64NVME:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc64nvme]),
+			ChecksumSHA512:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmSha512]),
+			ChecksumMD5:          utils.GetStringPtr(checksums[types.ChecksumAlgorithmMd5]),
+			ChecksumXXHASH64:     utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash64]),
+			ChecksumXXHASH3:      utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash3]),
+			ChecksumXXHASH128:    utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash128]),
+			SSECustomerAlgorithm: utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:       utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:    utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
 		})
 	var headers map[string]*string
 	if err == nil {
@@ -318,6 +328,12 @@ func (c S3ApiController) UploadPart(ctx fiber.Ctx) (*Response, error) {
 			"x-amz-checksum-xxhash64":  res.ChecksumXXHASH64,
 			"x-amz-checksum-xxhash3":   res.ChecksumXXHASH3,
 			"x-amz-checksum-xxhash128": res.ChecksumXXHASH128,
+		}
+		if res.SSECustomerAlgorithm != nil {
+			headers["x-amz-server-side-encryption-customer-algorithm"] = res.SSECustomerAlgorithm
+		}
+		if res.SSECustomerKeyMD5 != nil {
+			headers["x-amz-server-side-encryption-customer-key-MD5"] = res.SSECustomerKeyMD5
 		}
 	}
 	return &Response{
@@ -391,20 +407,40 @@ func (c S3ApiController) UploadPartCopy(ctx fiber.Ctx) (*Response, error) {
 	}
 
 	preconditionHdrs := utils.ParsePreconditionHeaders(ctx, utils.WithCopySource())
+	sourceEncryption, err := c.parseReadCustomerEncryption(ctx, true)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if sourceEncryption != nil {
+		defer sourceEncryption.CustomerKey.Destroy()
+	}
+	destinationPartEncryption, err := c.parseReadCustomerEncryption(ctx, false)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if destinationPartEncryption != nil {
+		defer destinationPartEncryption.CustomerKey.Destroy()
+	}
 
 	resp, err := c.be.UploadPartCopy(ctx.RequestCtx(),
 		&s3.UploadPartCopyInput{
-			Bucket:                      &bucket,
-			Key:                         &key,
-			CopySource:                  &copySource,
-			PartNumber:                  &partNumber,
-			UploadId:                    &uploadId,
-			CopySourceRange:             &copySrcRange,
-			CopySourceIfMatch:           preconditionHdrs.IfMatch,
-			CopySourceIfNoneMatch:       preconditionHdrs.IfNoneMatch,
-			CopySourceIfModifiedSince:   preconditionHdrs.IfModSince,
-			CopySourceIfUnmodifiedSince: preconditionHdrs.IfUnmodeSince,
-			ExpectedSourceBucketOwner:   &expectedSrcBucketOwnerUPC,
+			Bucket:                         &bucket,
+			Key:                            &key,
+			CopySource:                     &copySource,
+			PartNumber:                     &partNumber,
+			UploadId:                       &uploadId,
+			CopySourceRange:                &copySrcRange,
+			CopySourceIfMatch:              preconditionHdrs.IfMatch,
+			CopySourceIfNoneMatch:          preconditionHdrs.IfNoneMatch,
+			CopySourceIfModifiedSince:      preconditionHdrs.IfModSince,
+			CopySourceIfUnmodifiedSince:    preconditionHdrs.IfUnmodeSince,
+			ExpectedSourceBucketOwner:      &expectedSrcBucketOwnerUPC,
+			CopySourceSSECustomerAlgorithm: utils.GetStringPtr(ctx.Get("x-amz-copy-source-server-side-encryption-customer-algorithm")),
+			CopySourceSSECustomerKey:       utils.GetStringPtr(ctx.Get("x-amz-copy-source-server-side-encryption-customer-key")),
+			CopySourceSSECustomerKeyMD5:    utils.GetStringPtr(ctx.Get("x-amz-copy-source-server-side-encryption-customer-key-MD5")),
+			SSECustomerAlgorithm:           utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:                 utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:              utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
 		})
 	var headers map[string]*string
 	if err == nil && resp.CopySourceVersionId != "" {
@@ -598,6 +634,20 @@ func (c S3ApiController) CopyObject(ctx fiber.Ctx) (*Response, error) {
 	}
 
 	preconditionHdrs := utils.ParsePreconditionHeaders(ctx, utils.WithCopySource())
+	sourceEncryption, err := c.parseReadCustomerEncryption(ctx, true)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if sourceEncryption != nil {
+		defer sourceEncryption.CustomerKey.Destroy()
+	}
+	destinationEncryption, err := c.resolveWriteEncryption(ctx, bucket)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if destinationEncryption != nil {
+		defer destinationEncryption.CustomerKey.Destroy()
+	}
 
 	err = auth.CheckObjectAccess(ctx, bucket, acct, []types.ObjectIdentifier{{Key: &key}}, auth.BypassOverwrite, false, c.be, c.iam, true)
 	if err != nil {
@@ -610,31 +660,43 @@ func (c S3ApiController) CopyObject(ctx fiber.Ctx) (*Response, error) {
 
 	res, err := c.be.CopyObject(ctx.RequestCtx(),
 		s3response.CopyObjectInput{
-			Bucket:                      &bucket,
-			Key:                         &key,
-			ContentType:                 &contentType,
-			ContentDisposition:          &contentDisposition,
-			ContentEncoding:             &contentEncoding,
-			ContentLanguage:             &contentLanguage,
-			CacheControl:                &cacheControl,
-			Expires:                     &expires,
-			WebsiteRedirectLocation:     &websiteRedirectLocation,
-			Tagging:                     &tagging,
-			TaggingDirective:            taggingDirective,
-			CopySource:                  &copySource,
-			CopySourceIfMatch:           preconditionHdrs.IfMatch,
-			CopySourceIfNoneMatch:       preconditionHdrs.IfNoneMatch,
-			CopySourceIfModifiedSince:   preconditionHdrs.IfModSince,
-			CopySourceIfUnmodifiedSince: preconditionHdrs.IfUnmodeSince,
-			ExpectedBucketOwner:         &acct.Access,
-			ExpectedSourceBucketOwner:   &expectedSrcBucketOwner,
-			Metadata:                    metadata,
-			MetadataDirective:           metaDirective,
-			StorageClass:                types.StorageClass(storageClass),
-			ChecksumAlgorithm:           checksumAlgorithm,
-			ObjectLockRetainUntilDate:   &objLock.RetainUntilDate,
-			ObjectLockLegalHoldStatus:   objLock.LegalHoldStatus,
-			ObjectLockMode:              objLock.ObjectLockMode,
+			Bucket:                         &bucket,
+			Key:                            &key,
+			ContentType:                    &contentType,
+			ContentDisposition:             &contentDisposition,
+			ContentEncoding:                &contentEncoding,
+			ContentLanguage:                &contentLanguage,
+			CacheControl:                   &cacheControl,
+			Expires:                        &expires,
+			WebsiteRedirectLocation:        &websiteRedirectLocation,
+			Tagging:                        &tagging,
+			TaggingDirective:               taggingDirective,
+			CopySource:                     &copySource,
+			CopySourceIfMatch:              preconditionHdrs.IfMatch,
+			CopySourceIfNoneMatch:          preconditionHdrs.IfNoneMatch,
+			CopySourceIfModifiedSince:      preconditionHdrs.IfModSince,
+			CopySourceIfUnmodifiedSince:    preconditionHdrs.IfUnmodeSince,
+			ExpectedBucketOwner:            &acct.Access,
+			ExpectedSourceBucketOwner:      &expectedSrcBucketOwner,
+			Metadata:                       metadata,
+			MetadataDirective:              metaDirective,
+			StorageClass:                   types.StorageClass(storageClass),
+			ChecksumAlgorithm:              checksumAlgorithm,
+			ObjectLockRetainUntilDate:      &objLock.RetainUntilDate,
+			ObjectLockLegalHoldStatus:      objLock.LegalHoldStatus,
+			ObjectLockMode:                 objLock.ObjectLockMode,
+			CopySourceSSECustomerAlgorithm: utils.GetStringPtr(ctx.Get("x-amz-copy-source-server-side-encryption-customer-algorithm")),
+			CopySourceSSECustomerKey:       utils.GetStringPtr(ctx.Get("x-amz-copy-source-server-side-encryption-customer-key")),
+			CopySourceSSECustomerKeyMD5:    utils.GetStringPtr(ctx.Get("x-amz-copy-source-server-side-encryption-customer-key-MD5")),
+			SSECustomerAlgorithm:           utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:                 utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:              utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
+			SSEKMSEncryptionContext:        utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-context")),
+			SSEKMSKeyId:                    utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-aws-kms-key-id")),
+			BucketKeyEnabled:               explicitBucketKeyPtr(ctx.Get("x-amz-server-side-encryption-bucket-key-enabled"), destinationEncryption),
+			ServerSideEncryption:           types.ServerSideEncryption(ctx.Get("x-amz-server-side-encryption")),
+			SourceEncryption:               sourceEncryption,
+			DestinationEncryption:          destinationEncryption,
 		})
 
 	var etag *string
@@ -642,12 +704,15 @@ func (c S3ApiController) CopyObject(ctx fiber.Ctx) (*Response, error) {
 		etag = res.CopyObjectResult.ETag
 	}
 
+	headers := map[string]*string{
+		"x-amz-version-id":             res.VersionId,
+		"x-amz-copy-source-version-id": res.CopySourceVersionId,
+	}
+	addObjectEncryptionHeaders(headers, res.ServerSideEncryption, res.SSEKMSKeyId,
+		res.SSECustomerAlgorithm, res.SSECustomerKeyMD5, res.BucketKeyEnabled)
 	return &Response{
-		Headers: map[string]*string{
-			"x-amz-version-id":             res.VersionId,
-			"x-amz-copy-source-version-id": res.CopySourceVersionId,
-		},
-		Data: res.CopyObjectResult,
+		Headers: headers,
+		Data:    res.CopyObjectResult,
 		MetaOpts: &MetaOptions{
 			BucketOwner: parsedAcl.Owner,
 			ObjectETag:  etag,
@@ -784,6 +849,13 @@ func (c S3ApiController) PutObject(ctx fiber.Ctx) (*Response, error) {
 	}
 
 	ifMatch, ifNoneMatch := utils.ParsePreconditionMatchHeaders(ctx)
+	encryptionIntent, err := c.resolveWriteEncryption(ctx, bucket)
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if encryptionIntent != nil {
+		defer encryptionIntent.CustomerKey.Destroy()
+	}
 
 	res, err := c.be.PutObject(ctx.RequestCtx(),
 		s3response.PutObjectInput{
@@ -816,24 +888,35 @@ func (c S3ApiController) PutObject(ctx fiber.Ctx) (*Response, error) {
 			ChecksumXXHASH128:         utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash128]),
 			IfMatch:                   ifMatch,
 			IfNoneMatch:               ifNoneMatch,
+			SSECustomerAlgorithm:      utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-algorithm")),
+			SSECustomerKey:            utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key")),
+			SSECustomerKeyMD5:         utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-customer-key-MD5")),
+			SSEKMSEncryptionContext:   utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-context")),
+			SSEKMSKeyId:               utils.GetStringPtr(ctx.Get("x-amz-server-side-encryption-aws-kms-key-id")),
+			ServerSideEncryption:      types.ServerSideEncryption(ctx.Get("x-amz-server-side-encryption")),
+			Encryption:                encryptionIntent,
 		})
+	headers := map[string]*string{
+		"ETag":                     &res.ETag,
+		"x-amz-checksum-crc32":     res.ChecksumCRC32,
+		"x-amz-checksum-crc32c":    res.ChecksumCRC32C,
+		"x-amz-checksum-crc64nvme": res.ChecksumCRC64NVME,
+		"x-amz-checksum-sha1":      res.ChecksumSHA1,
+		"x-amz-checksum-sha256":    res.ChecksumSHA256,
+		"x-amz-checksum-sha512":    res.ChecksumSHA512,
+		"x-amz-checksum-md5":       res.ChecksumMD5,
+		"x-amz-checksum-xxhash64":  res.ChecksumXXHASH64,
+		"x-amz-checksum-xxhash3":   res.ChecksumXXHASH3,
+		"x-amz-checksum-xxhash128": res.ChecksumXXHASH128,
+		"x-amz-checksum-type":      utils.ConvertToStringPtr(res.ChecksumType),
+		"x-amz-version-id":         &res.VersionID,
+		"x-amz-object-size":        utils.ConvertPtrToStringPtr(res.Size),
+	}
+	for key, value := range encryptionResponseHeaders(res.Encryption) {
+		headers[key] = value
+	}
 	return &Response{
-		Headers: map[string]*string{
-			"ETag":                     &res.ETag,
-			"x-amz-checksum-crc32":     res.ChecksumCRC32,
-			"x-amz-checksum-crc32c":    res.ChecksumCRC32C,
-			"x-amz-checksum-crc64nvme": res.ChecksumCRC64NVME,
-			"x-amz-checksum-sha1":      res.ChecksumSHA1,
-			"x-amz-checksum-sha256":    res.ChecksumSHA256,
-			"x-amz-checksum-sha512":    res.ChecksumSHA512,
-			"x-amz-checksum-md5":       res.ChecksumMD5,
-			"x-amz-checksum-xxhash64":  res.ChecksumXXHASH64,
-			"x-amz-checksum-xxhash3":   res.ChecksumXXHASH3,
-			"x-amz-checksum-xxhash128": res.ChecksumXXHASH128,
-			"x-amz-checksum-type":      utils.ConvertToStringPtr(res.ChecksumType),
-			"x-amz-version-id":         &res.VersionID,
-			"x-amz-object-size":        utils.ConvertPtrToStringPtr(res.Size),
-		},
+		Headers: headers,
 		MetaOpts: &MetaOptions{
 			ContentLength: contentLength,
 			BucketOwner:   parsedAcl.Owner,

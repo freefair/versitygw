@@ -15,6 +15,7 @@
 package s3event
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -92,6 +93,15 @@ func (ns *NatsEventSender) SendEvent(ctx fiber.Ctx, meta EventMeta) {
 	schema := createEventSchema(ctx, meta, ConfigurationIdWebhook)
 
 	go ns.send(schema)
+}
+
+func (ns *NatsEventSender) SendBackgroundEvent(_ context.Context, meta BackgroundEventMeta) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.filter != nil && !ns.filter.Filter(meta.EventName) {
+		return
+	}
+	go ns.send(createBackgroundEventSchema(meta, ConfigurationIdNats))
 }
 
 func (ns *NatsEventSender) Close() error {

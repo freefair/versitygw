@@ -24,8 +24,29 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/versity/versitygw/backend"
+	"github.com/versity/versitygw/internal/encryption"
+	"github.com/versity/versitygw/internal/lifecycle"
+	"github.com/versity/versitygw/s3response"
 )
+
+func TestAzureSatisfiesLifecycleExecutorContract(t *testing.T) {
+	var executor lifecycle.Executor = &Azure{}
+	if executor == nil {
+		t.Fatal("Azure lifecycle executor is nil")
+	}
+}
+
+func TestAzureCopyEncryptionAttributesPermitSelfCopy(t *testing.T) {
+	input := s3response.CopyObjectInput{ServerSideEncryption: types.ServerSideEncryptionAwsKms}
+	if !azureCopyChangesEncryption(input) {
+		t.Fatal("SSE-KMS request was not recognized as an encryption change")
+	}
+	if azureCopyChangesEncryption(s3response.CopyObjectInput{DestinationEncryption: &encryption.Intent{Mode: encryption.ModeSSES3}}) {
+		t.Fatal("resolved bucket default alone was treated as a client-requested encryption change")
+	}
+}
 
 func TestDecodeAzMarkerToken(t *testing.T) {
 	tests := []struct {

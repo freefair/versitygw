@@ -57,6 +57,8 @@ func isAclPutAction(a Action) bool {
 	}
 }
 
+func isObjectWriteAction(a Action) bool { return a == PutObjectAction }
+
 // isVersionedAction is s3:VersionId's applicable-action set: the *Version*
 // action family.
 func isVersionedAction(a Action) bool {
@@ -78,9 +80,8 @@ func isVersionedAction(a Action) bool {
 //
 // This deliberately does not cover AWS's full S3 condition-key catalogue —
 // tag-based keys (s3:ExistingObjectTag/*, s3:RequestObjectTag/*,
-// s3:RequestObjectTagKeys), object-lock keys, s3:x-amz-server-side-encryption
-// (the gateway never reads that header, so enforcing it would be
-// misleading), and aws:MultiFactorAuthAge (no MFA concept here) are out of
+// s3:RequestObjectTagKeys), object-lock keys, and aws:MultiFactorAuthAge
+// (no MFA concept here) are out of
 // scope. A Condition naming one of those is still accepted at write time —
 // the key just never appears in the runtime context, so any Condition
 // depending on it simply never matches, the same as any other key this
@@ -99,11 +100,14 @@ var bucketPolicyConditionKeys = map[string]conditionKeyRule{
 	"aws:multifactorauthage": {appliesTo: anyAction},
 
 	// S3-specific keys: only valid with a specific action subset.
-	"s3:prefix":    {appliesTo: isListAction},
-	"s3:delimiter": {appliesTo: isListAction},
-	"s3:max-keys":  {appliesTo: isListAction},
-	"s3:x-amz-acl": {appliesTo: isAclPutAction},
-	"s3:versionid": {appliesTo: isVersionedAction},
+	"s3:prefix":                       {appliesTo: isListAction},
+	"s3:delimiter":                    {appliesTo: isListAction},
+	"s3:max-keys":                     {appliesTo: isListAction},
+	"s3:x-amz-acl":                    {appliesTo: isAclPutAction},
+	"s3:versionid":                    {appliesTo: isVersionedAction},
+	"s3:x-amz-server-side-encryption": {appliesTo: isObjectWriteAction},
+	"s3:x-amz-server-side-encryption-aws-kms-key-id":     {appliesTo: isObjectWriteAction},
+	"s3:x-amz-server-side-encryption-customer-algorithm": {appliesTo: isObjectWriteAction},
 }
 
 // lookupConditionKeyRule finds key's rule case-insensitively.

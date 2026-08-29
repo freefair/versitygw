@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"encoding/xml"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/internal/encryption"
 	"github.com/versity/versitygw/s3api/middlewares"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -126,6 +128,18 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 	websiteRedirectLocation := parsed.Fields["x-amz-website-redirect-location"]
 
 	key := parsed.Fields["key"]
+	// Bucket-policy encryption condition keys are evaluated through the normal
+	// request context. Mirror only non-secret POST fields into that context;
+	// customer key material remains confined to the parsed multipart form.
+	for _, field := range []string{
+		"x-amz-server-side-encryption",
+		"x-amz-server-side-encryption-aws-kms-key-id",
+		"x-amz-server-side-encryption-customer-algorithm",
+	} {
+		if value := parsed.Fields[field]; value != "" {
+			ctx.Request().Header.Set(field, value)
+		}
+	}
 
 	err := c.verifyAccess(ctx,
 		auth.AccessOptions{
@@ -144,6 +158,33 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 			},
 		}, err
 	}
+	encryptionIntent, err := c.resolveWriteEncryptionHeaders(ctx, bucket, encryption.RequestHeaders{
+		Algorithm:         parsed.Fields["x-amz-server-side-encryption"],
+		KMSKeyID:          parsed.Fields["x-amz-server-side-encryption-aws-kms-key-id"],
+		KMSContext:        parsed.Fields["x-amz-server-side-encryption-context"],
+		BucketKeyEnabled:  parsed.Fields["x-amz-server-side-encryption-bucket-key-enabled"],
+		CustomerAlgorithm: parsed.Fields["x-amz-server-side-encryption-customer-algorithm"],
+		CustomerKey:       parsed.Fields["x-amz-server-side-encryption-customer-key"],
+		CustomerKeyMD5:    parsed.Fields["x-amz-server-side-encryption-customer-key-md5"],
+	})
+	if err != nil {
+		return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+	}
+	if encryptionIntent != nil {
+		defer encryptionIntent.CustomerKey.Destroy()
+	}
+
+	objectBody := io.Reader(parsed.FileRdr)
+	objectContentLength := parsed.ContentLength
+	if encryptionIntent != nil {
+		spooled, size, err := spoolEncryptedPOSTObject(parsed.FileRdr)
+		if err != nil {
+			return &Response{MetaOpts: &MetaOptions{BucketOwner: parsedAcl.Owner}}, err
+		}
+		defer spooled.Close()
+		objectBody = spooled
+		objectContentLength = size
+	}
 
 	// parse POST policy — absent for anonymous uploads to public buckets
 	if !IsBucketPublic {
@@ -161,7 +202,7 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 		err = policy.Evaluate(auth.PostPolicyEvalInput{
 			Bucket:        bucket,
 			Key:           key,
-			ContentLength: parsed.ContentLength,
+			ContentLength: objectContentLength,
 			Fields:        parsed.Fields,
 		})
 		if err != nil {
@@ -215,7 +256,6 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 			},
 		}, err
 	}
-
 	res, err := c.be.PutObject(ctx.RequestCtx(), s3response.PutObjectInput{
 		Bucket:                  &bucket,
 		Key:                     &key,
@@ -226,8 +266,8 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 		CacheControl:            &cacheControl,
 		Expires:                 &expires,
 		WebsiteRedirectLocation: &websiteRedirectLocation,
-		Body:                    parsed.FileRdr,
-		ContentLength:           &parsed.ContentLength,
+		Body:                    objectBody,
+		ContentLength:           &objectContentLength,
 		Tagging:                 &tagging,
 		Metadata:                metadata,
 		ChecksumCRC32:           utils.GetStringPtr(checksums[types.ChecksumAlgorithmCrc32]),
@@ -240,6 +280,7 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 		ChecksumXXHASH64:        utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash64]),
 		ChecksumXXHASH3:         utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash3]),
 		ChecksumXXHASH128:       utils.GetStringPtr(checksums[types.ChecksumAlgorithmXxhash128]),
+		Encryption:              encryptionIntent,
 	})
 	if err != nil {
 		return &Response{
@@ -260,9 +301,7 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 			redirectURI := u.String()
 
 			return &Response{
-				Headers: map[string]*string{
-					"Location": &redirectURI,
-				},
+				Headers: mergeResponseHeaders(map[string]*string{"Location": &redirectURI}, encryptionResponseHeaders(res.Encryption)),
 				MetaOpts: &MetaOptions{
 					ContentLength: parsed.FileRdr.Length(),
 					BucketOwner:   parsedAcl.Owner,
@@ -294,24 +333,28 @@ func (c S3ApiController) POSTObject(ctx fiber.Ctx) (*Response, error) {
 		}
 	}
 
+	headers := map[string]*string{
+		"Etag":                     &res.ETag,
+		"Location":                 &location,
+		"x-amz-checksum-crc32":     res.ChecksumCRC32,
+		"x-amz-checksum-crc32c":    res.ChecksumCRC32C,
+		"x-amz-checksum-crc64nvme": res.ChecksumCRC64NVME,
+		"x-amz-checksum-sha1":      res.ChecksumSHA1,
+		"x-amz-checksum-sha256":    res.ChecksumSHA256,
+		"x-amz-checksum-sha512":    res.ChecksumSHA512,
+		"x-amz-checksum-md5":       res.ChecksumMD5,
+		"x-amz-checksum-xxhash64":  res.ChecksumXXHASH64,
+		"x-amz-checksum-xxhash3":   res.ChecksumXXHASH3,
+		"x-amz-checksum-xxhash128": res.ChecksumXXHASH128,
+		"x-amz-checksum-type":      utils.ConvertToStringPtr(res.ChecksumType),
+		"x-amz-version-id":         utils.GetStringPtr(res.VersionID),
+	}
+	for key, value := range encryptionResponseHeaders(res.Encryption) {
+		headers[key] = value
+	}
 	return &Response{
-		Headers: map[string]*string{
-			"Etag":                     &res.ETag,
-			"Location":                 &location,
-			"x-amz-checksum-crc32":     res.ChecksumCRC32,
-			"x-amz-checksum-crc32c":    res.ChecksumCRC32C,
-			"x-amz-checksum-crc64nvme": res.ChecksumCRC64NVME,
-			"x-amz-checksum-sha1":      res.ChecksumSHA1,
-			"x-amz-checksum-sha256":    res.ChecksumSHA256,
-			"x-amz-checksum-sha512":    res.ChecksumSHA512,
-			"x-amz-checksum-md5":       res.ChecksumMD5,
-			"x-amz-checksum-xxhash64":  res.ChecksumXXHASH64,
-			"x-amz-checksum-xxhash3":   res.ChecksumXXHASH3,
-			"x-amz-checksum-xxhash128": res.ChecksumXXHASH128,
-			"x-amz-checksum-type":      utils.ConvertToStringPtr(res.ChecksumType),
-			"x-amz-version-id":         utils.GetStringPtr(res.VersionID),
-		},
-		Data: respBody,
+		Headers: headers,
+		Data:    respBody,
 		MetaOpts: &MetaOptions{
 			ContentLength: parsed.FileRdr.Length(),
 			BucketOwner:   parsedAcl.Owner,

@@ -41,6 +41,7 @@ const (
 	ContextKeyWebsiteConfig    ContextKey = "website-config"
 	ContextKeyCallerIdentity   ContextKey = "iam-caller-identity"
 	ContextKeyOriginalURIPath  ContextKey = "original-uri-path"
+	ContextKeySecureTransport  ContextKey = "secure-transport"
 )
 
 func (ck ContextKey) Set(ctx fiber.Ctx, val any) {

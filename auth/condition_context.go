@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/versity/versitygw/internal/httpctx"
 )
 
 // requestConditionContext builds the IAM policy-condition keys describing
@@ -30,10 +31,14 @@ import (
 // when it evaluates an identity policy.
 func requestConditionContext(ctx fiber.Ctx) map[string][]string {
 	now := time.Now().UTC()
+	secure := ctx.Secure()
+	if resolved, ok := httpctx.ContextKeySecureTransport.Get(ctx).(bool); ok {
+		secure = resolved
+	}
 	condCtx := map[string][]string{
 		"aws:CurrentTime":     {now.Format(time.RFC3339)},
 		"aws:EpochTime":       {strconv.FormatInt(now.Unix(), 10)},
-		"aws:SecureTransport": {strconv.FormatBool(ctx.Secure())},
+		"aws:SecureTransport": {strconv.FormatBool(secure)},
 	}
 	// ctx.IP() is the real peer address: the gateway's fiber app configures
 	// neither ProxyHeader nor TrustProxy, so no client-supplied header can
@@ -59,6 +64,15 @@ func requestConditionContext(ctx fiber.Ctx) map[string][]string {
 	}
 	if acl := ctx.Get("X-Amz-Acl"); acl != "" {
 		condCtx["s3:x-amz-acl"] = []string{acl}
+	}
+	if algorithm := ctx.Get("x-amz-server-side-encryption"); algorithm != "" {
+		condCtx["s3:x-amz-server-side-encryption"] = []string{algorithm}
+	}
+	if keyID := ctx.Get("x-amz-server-side-encryption-aws-kms-key-id"); keyID != "" {
+		condCtx["s3:x-amz-server-side-encryption-aws-kms-key-id"] = []string{keyID}
+	}
+	if customerAlgorithm := ctx.Get("x-amz-server-side-encryption-customer-algorithm"); customerAlgorithm != "" {
+		condCtx["s3:x-amz-server-side-encryption-customer-algorithm"] = []string{customerAlgorithm}
 	}
 	if versionID := ctx.Query("versionId"); versionID != "" {
 		condCtx["s3:VersionId"] = []string{versionID}

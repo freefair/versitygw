@@ -808,16 +808,28 @@ func TestGetObjectLegalHold(ts *TestState) {
 	ts.Run(GetObjectLegalHold_success)
 }
 
+func TestBucketLifecycle(ts *TestState) {
+	ts.Run(PutBucketLifecycleConfiguration_success)
+	ts.Run(GetBucketLifecycleConfiguration_success)
+	ts.Run(DeleteBucketLifecycle_success)
+}
+
+func TestBucketEncryption(ts *TestState) {
+	ts.Run(PutBucketEncryption_success)
+	ts.Run(GetBucketEncryption_success)
+	ts.Run(DeleteBucketEncryption_resets_default)
+	ts.Run(ObjectEncryption_round_trip_copy_and_multipart)
+	ts.Run(ObjectEncryption_browser_post)
+	ts.Run(ObjectEncryption_sse_c_round_trip)
+	ts.Run(ObjectEncryption_local_kms_modes)
+}
+
 func TestNotImplementedActions(ts *TestState) {
 	// bucket analytics actions
 	ts.Run(PutBucketAnalyticsConfiguration_not_implemented)
 	ts.Run(GetBucketAnalyticsConfiguration_not_implemented)
 	ts.Run(ListBucketAnalyticsConfiguration_not_implemented)
 	ts.Run(DeleteBucketAnalyticsConfiguration_not_implemented)
-	// bucket encryption actions
-	ts.Run(PutBucketEncryption_not_implemented)
-	ts.Run(GetBucketEncryption_not_implemented)
-	ts.Run(DeleteBucketEncryption_not_implemented)
 	// bucket intelligent tierieng actions
 	ts.Run(PutBucketIntelligentTieringConfiguration_not_implemented)
 	ts.Run(GetBucketIntelligentTieringConfiguration_not_implemented)
@@ -828,10 +840,6 @@ func TestNotImplementedActions(ts *TestState) {
 	ts.Run(GetBucketInventoryConfiguration_not_implemented)
 	ts.Run(ListBucketInventoryConfiguration_not_implemented)
 	ts.Run(DeleteBucketInventoryConfiguration_not_implemented)
-	// bucket lifecycle configuration actions
-	ts.Run(PutBucketLifecycleConfiguration_not_implemented)
-	ts.Run(GetBucketLifecycleConfiguration_not_implemented)
-	ts.Run(DeleteBucketLifecycle_not_implemented)
 	// bucket logging actions
 	ts.Run(PutBucketLogging_not_implemented)
 	ts.Run(GetBucketLogging_not_implemented)
@@ -936,6 +944,7 @@ func TestFullFlow(ts *TestState) {
 	TestPutBucketWebsite(ts)
 	TestGetBucketWebsite(ts)
 	TestDeleteBucketWebsite(ts)
+	TestBucketLifecycle(ts)
 	TestPreflightOPTIONSEndpoint(ts)
 	TestPutObjectLockConfiguration(ts)
 	TestGetObjectLockConfiguration(ts)
@@ -3229,9 +3238,13 @@ func GetIntTests() IntTests {
 		"GetBucketAnalyticsConfiguration_not_implemented":                                  GetBucketAnalyticsConfiguration_not_implemented,
 		"ListBucketAnalyticsConfiguration_not_implemented":                                 ListBucketAnalyticsConfiguration_not_implemented,
 		"DeleteBucketAnalyticsConfiguration_not_implemented":                               DeleteBucketAnalyticsConfiguration_not_implemented,
-		"PutBucketEncryption_not_implemented":                                              PutBucketEncryption_not_implemented,
-		"GetBucketEncryption_not_implemented":                                              GetBucketEncryption_not_implemented,
-		"DeleteBucketEncryption_not_implemented":                                           DeleteBucketEncryption_not_implemented,
+		"PutBucketEncryption_success":                                                      PutBucketEncryption_success,
+		"GetBucketEncryption_success":                                                      GetBucketEncryption_success,
+		"DeleteBucketEncryption_resets_default":                                            DeleteBucketEncryption_resets_default,
+		"ObjectEncryption_round_trip_copy_and_multipart":                                   ObjectEncryption_round_trip_copy_and_multipart,
+		"ObjectEncryption_browser_post":                                                    ObjectEncryption_browser_post,
+		"ObjectEncryption_sse_c_round_trip":                                                ObjectEncryption_sse_c_round_trip,
+		"ObjectEncryption_local_kms_modes":                                                 ObjectEncryption_local_kms_modes,
 		"PutBucketIntelligentTieringConfiguration_not_implemented":                         PutBucketIntelligentTieringConfiguration_not_implemented,
 		"GetBucketIntelligentTieringConfiguration_not_implemented":                         GetBucketIntelligentTieringConfiguration_not_implemented,
 		"ListBucketIntelligentTieringConfiguration_not_implemented":                        ListBucketIntelligentTieringConfiguration_not_implemented,
@@ -3240,9 +3253,9 @@ func GetIntTests() IntTests {
 		"GetBucketInventoryConfiguration_not_implemented":                                  GetBucketInventoryConfiguration_not_implemented,
 		"ListBucketInventoryConfiguration_not_implemented":                                 ListBucketInventoryConfiguration_not_implemented,
 		"DeleteBucketInventoryConfiguration_not_implemented":                               DeleteBucketInventoryConfiguration_not_implemented,
-		"PutBucketLifecycleConfiguration_not_implemented":                                  PutBucketLifecycleConfiguration_not_implemented,
-		"GetBucketLifecycleConfiguration_not_implemented":                                  GetBucketLifecycleConfiguration_not_implemented,
-		"DeleteBucketLifecycle_not_implemented":                                            DeleteBucketLifecycle_not_implemented,
+		"PutBucketLifecycleConfiguration_success":                                          PutBucketLifecycleConfiguration_success,
+		"GetBucketLifecycleConfiguration_success":                                          GetBucketLifecycleConfiguration_success,
+		"DeleteBucketLifecycle_success":                                                    DeleteBucketLifecycle_success,
 		"PutBucketLogging_not_implemented":                                                 PutBucketLogging_not_implemented,
 		"GetBucketLogging_not_implemented":                                                 GetBucketLogging_not_implemented,
 		"PutBucketRequestPayment_not_implemented":                                          PutBucketRequestPayment_not_implemented,

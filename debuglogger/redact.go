@@ -55,6 +55,11 @@ var sensitiveFieldNames = map[string]bool{
 	"x-amz-copy-source-server-side-encryption-customer-key": true,
 }
 
+var neverLogFieldNames = map[string]bool{
+	"x-amz-server-side-encryption-customer-key":             true,
+	"x-amz-copy-source-server-side-encryption-customer-key": true,
+}
+
 func isSensitiveFieldName(name string) bool {
 	return sensitiveFieldNames[strings.ToLower(name)]
 }
@@ -102,11 +107,12 @@ var RedactedQueryParamsTag logger.LogFunc = func(output logger.Buffer, ctx fiber
 }
 
 // debugRedact is redact's counterpart for the debug logger's own
-// header/query/form-field printing. Unlike redact (used by the always-on,
-// non-debug access log), it honors LevelUnsafe: at that level it returns
-// value unchanged so the debug output shows exactly what was on the wire.
-// At LevelDebug it masks identically to redact.
+// header/query/form-field printing. LevelUnsafe may expose ordinary request
+// credentials for wire debugging, but raw SSE-C key material is never logged.
 func debugRedact(key, value string) string {
+	if neverLogFieldNames[strings.ToLower(key)] {
+		return redactedValue
+	}
 	if IsUnsafeEnabled() {
 		return value
 	}
@@ -114,7 +120,7 @@ func debugRedact(key, value string) string {
 }
 
 // debugRedactedQueryString is RedactedQueryString's counterpart for the
-// debug logger, using debugRedact so LevelUnsafe shows unmasked values.
+// debug logger, using debugRedact so LevelUnsafe still protects raw keys.
 func debugRedactedQueryString(queryArgs *fasthttp.Args) string {
 	if queryArgs.Len() == 0 {
 		return ""

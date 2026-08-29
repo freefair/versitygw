@@ -101,6 +101,22 @@ func TestValidateBucketPolicyCondition(t *testing.T) {
 			actions: actionSet(PutObjectAction),
 		},
 		{
+			name:    "S3 encryption algorithm accepted for PutObject",
+			raw:     `{"StringEquals":{"s3:x-amz-server-side-encryption":"aws:kms"}}`,
+			actions: actionSet(PutObjectAction),
+		},
+		{
+			name:    "S3 KMS key rejected for GetObject",
+			raw:     `{"StringEquals":{"s3:x-amz-server-side-encryption-aws-kms-key-id":"alias/key"}}`,
+			actions: actionSet(GetObjectAction),
+			wantErr: policyErrConditionActionMismatch,
+		},
+		{
+			name:    "SSE-C algorithm accepted for PutObject",
+			raw:     `{"StringEquals":{"s3:x-amz-server-side-encryption-customer-algorithm":"AES256"}}`,
+			actions: actionSet(PutObjectAction),
+		},
+		{
 			name:    "s3:x-amz-acl accepted for PutBucketAcl",
 			raw:     `{"StringEquals":{"s3:x-amz-acl":"public-read"}}`,
 			actions: actionSet(PutBucketAclAction),

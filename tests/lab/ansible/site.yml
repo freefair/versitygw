@@ -26,3 +26,10 @@
   gather_facts: true
   roles:
     - role: scoutfs
+
+- name: Deploy Lifecycle and Encryption test gateways
+  hosts: cluster_nodes
+  become: true
+  gather_facts: false
+  roles:
+    - role: gateway

@@ -15,19 +15,35 @@
 package s3api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
+	"github.com/versity/versitygw/internal/encryption"
 	"github.com/versity/versitygw/internal/netutil"
 	"github.com/versity/versitygw/s3api/middlewares"
 )
+
+type encryptionHealthBackend struct {
+	backend.BackendUnsupported
+	inventory encryption.Inventory
+	err       error
+	calls     atomic.Int32
+}
+
+func (b *encryptionHealthBackend) AuditEncryption(context.Context) (encryption.Inventory, error) {
+	b.calls.Add(1)
+	return b.inventory, b.err
+}
 
 func newTestS3ApiServer(opts ...Option) (*S3ApiServer, error) {
 	allOpts := append([]Option{WithConcurrencyLimiter(10, 10)}, opts...)
@@ -80,6 +96,47 @@ func TestS3ApiServer_Serve(t *testing.T) {
 				t.Errorf("S3ApiServer.Serve() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestHealthEndpointReportsEncryptionKeyReadinessAndCachesAudit(t *testing.T) {
+	backend := &encryptionHealthBackend{inventory: encryption.Inventory{
+		ActiveKeyReferences:  map[string]string{"local": "current"},
+		MissingKeyObjects:    1,
+		MissingKeyReferences: map[string]int64{"local:historical": 1},
+	}}
+	server, err := New(
+		backend,
+		middlewares.RootUserConfig{Access: "access", Secret: "secret"},
+		"us-east-1",
+		auth.NewIAMServiceSingle(auth.Account{Access: "access", Secret: "secret"}),
+		nil, nil, nil, nil,
+		WithConcurrencyLimiter(10, 10), WithHealth("/healthz"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		response, err := server.app.Test(httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if err != nil {
+			t.Fatalf("app.Test() error = %v", err)
+		}
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("health status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
+		}
+		var body encryption.Health
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			_ = response.Body.Close()
+			t.Fatalf("decode health response: %v", err)
+		}
+		_ = response.Body.Close()
+		if body.Status != encryption.HealthStatusUnhealthy || body.ActiveKeyReferences["local"] != "current" || body.MissingKeyReferences["local:historical"] != 1 {
+			t.Fatalf("health body = %#v", body)
+		}
+	}
+	if backend.calls.Load() != 1 {
+		t.Fatalf("AuditEncryption() calls = %d, want 1 cached call", backend.calls.Load())
 	}
 }
 

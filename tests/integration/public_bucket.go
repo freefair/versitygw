@@ -1578,7 +1578,7 @@ func PublicBucket_public_object_policy(s *S3Conf) error {
 					})
 					return err
 				},
-				ExpectedErr: s3err.GetAPIError(s3err.ErrNotImplemented),
+				ExpectedErr: s3err.GetAPIError(s3err.ErrNoSuchKey),
 			},
 			{
 				Action: "SelectObjectContent",

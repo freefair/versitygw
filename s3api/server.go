@@ -15,12 +15,15 @@
 package s3api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -29,6 +32,7 @@ import (
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/internal/encryption"
 	"github.com/versity/versitygw/internal/netutil"
 	"github.com/versity/versitygw/metrics"
 	"github.com/versity/versitygw/s3api/controllers"
@@ -43,6 +47,8 @@ import (
 const (
 	shutDownDuration     = time.Second * 10
 	requestHeaderMaxSize = 8 * 1024
+	healthAuditTTL       = 30 * time.Second
+	healthAuditTimeout   = 30 * time.Second
 )
 
 type S3ApiServer struct {
@@ -53,6 +59,10 @@ type S3ApiServer struct {
 	quiet            bool
 	keepAlive        bool
 	health           string
+	healthMu         sync.Mutex
+	healthAuditAt    time.Time
+	healthInventory  encryption.Inventory
+	healthAuditErr   error
 	maxConnections   int
 	maxRequests      int
 	webuiMountPrefix string
@@ -141,9 +151,7 @@ func New(
 
 	// Set up health endpoint if specified
 	if server.health != "" {
-		app.Get(server.health, func(ctx fiber.Ctx) error {
-			return ctx.SendStatus(http.StatusOK)
-		})
+		app.Get(server.health, server.serveHealth)
 	}
 
 	// Set up WebUI on the S3 port if configured
@@ -190,6 +198,28 @@ func New(
 	server.Router.Init()
 
 	return server, nil
+}
+
+func (server *S3ApiServer) serveHealth(ctx fiber.Ctx) error {
+	auditor, ok := server.backend.(backend.EncryptionAuditor)
+	if !ok {
+		return ctx.SendStatus(http.StatusOK)
+	}
+
+	server.healthMu.Lock()
+	defer server.healthMu.Unlock()
+	if server.healthAuditAt.IsZero() || time.Since(server.healthAuditAt) >= healthAuditTTL {
+		auditContext, cancel := context.WithTimeout(ctx.Context(), healthAuditTimeout)
+		server.healthInventory, server.healthAuditErr = auditor.AuditEncryption(auditContext)
+		cancel()
+		server.healthAuditAt = time.Now()
+	}
+	health := server.healthInventory.Health(server.healthAuditErr)
+	status := http.StatusOK
+	if health.Status != encryption.HealthStatusHealthy {
+		status = http.StatusServiceUnavailable
+	}
+	return ctx.Status(status).JSON(health)
 }
 
 func validateRouteMount(route routeMount) (string, error) {
@@ -264,6 +294,14 @@ func WithReadOnly() Option {
 // WithMpMaxParts sets the maximum number of parts allowed in a multipart upload.
 func WithMpMaxParts(n int) Option {
 	return func(s *S3ApiServer) { s.Router.mpMaxParts = n }
+}
+
+// WithTrustedProxyPrefixes allows SSE-C over TLS terminated by an explicitly
+// trusted immediate reverse proxy. Forwarding headers remain untrusted by default.
+func WithTrustedProxyPrefixes(prefixes []netip.Prefix) Option {
+	return func(s *S3ApiServer) {
+		s.Router.trustedProxyPrefixes = append([]netip.Prefix(nil), prefixes...)
+	}
 }
 
 // WithHostStyle enabled host-style bucket addressing on the server

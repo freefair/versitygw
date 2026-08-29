@@ -107,6 +107,15 @@ func (ks *Kafka) SendEvent(ctx fiber.Ctx, meta EventMeta) {
 	go ks.send(schema)
 }
 
+func (ks *Kafka) SendBackgroundEvent(_ context.Context, meta BackgroundEventMeta) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	if ks.filter != nil && !ks.filter.Filter(meta.EventName) {
+		return
+	}
+	go ks.send(createBackgroundEventSchema(meta, ConfigurationIdKafka))
+}
+
 func (ks *Kafka) Close() error {
 	return ks.writer.Close()
 }

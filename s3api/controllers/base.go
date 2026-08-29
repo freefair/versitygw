@@ -18,6 +18,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -34,15 +35,16 @@ import (
 )
 
 type S3ApiController struct {
-	be            backend.Backend
-	iam           auth.IAMService
-	logger        s3log.AuditLogger
-	evSender      s3event.S3EventSender
-	mm            metrics.Manager
-	mpMaxParts    int
-	readonly      bool
-	disableACL    bool
-	virtualDomain string
+	be                   backend.Backend
+	iam                  auth.IAMService
+	logger               s3log.AuditLogger
+	evSender             s3event.S3EventSender
+	mm                   metrics.Manager
+	mpMaxParts           int
+	readonly             bool
+	disableACL           bool
+	virtualDomain        string
+	trustedProxyPrefixes []netip.Prefix
 }
 
 const (
@@ -63,17 +65,18 @@ var (
 	xmlhdr = []byte(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 )
 
-func New(be backend.Backend, iam auth.IAMService, logger s3log.AuditLogger, evs s3event.S3EventSender, mm metrics.Manager, readonly, disableACL bool, virtualDomain string, mpMaxParts int) S3ApiController {
+func New(be backend.Backend, iam auth.IAMService, logger s3log.AuditLogger, evs s3event.S3EventSender, mm metrics.Manager, readonly, disableACL bool, virtualDomain string, mpMaxParts int, trustedProxyPrefixes ...netip.Prefix) S3ApiController {
 	return S3ApiController{
-		be:            be,
-		iam:           iam,
-		logger:        logger,
-		evSender:      evs,
-		readonly:      readonly,
-		mm:            mm,
-		disableACL:    disableACL,
-		virtualDomain: virtualDomain,
-		mpMaxParts:    mpMaxParts,
+		be:                   be,
+		iam:                  iam,
+		logger:               logger,
+		evSender:             evs,
+		readonly:             readonly,
+		mm:                   mm,
+		disableACL:           disableACL,
+		virtualDomain:        virtualDomain,
+		trustedProxyPrefixes: append([]netip.Prefix(nil), trustedProxyPrefixes...),
+		mpMaxParts:           mpMaxParts,
 	}
 }
 

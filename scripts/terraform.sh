@@ -38,17 +38,23 @@ run_terraform() {
 }
 
 require_runtime_configuration() {
-    lab_require_variable PROXMOX_TOKEN
-    lab_require_variable TF_VAR_proxmox_endpoint
+    local name
+    for name in PROXMOX_TOKEN TF_VAR_proxmox_endpoint TF_VAR_network_bridge TF_VAR_vlan_id \
+        TF_VAR_network_prefix_length TF_VAR_gateway TF_VAR_storage_ip TF_VAR_node_ips \
+        TF_VAR_storage_vm_id TF_VAR_node_vm_ids VERSITYGW_LAB_SUBNET_PREFIX; do
+        lab_require_variable "${name}"
+    done
     [[ -f "${LAB_LOCAL_DIR}/ssh/id_ed25519.pub" || -n "${TF_VAR_ssh_public_key:-}" ]] || \
         lab_die "create the lab SSH key first: ${LAB_LOCAL_DIR}/ssh/id_ed25519"
 }
 
 verify_create_plan() {
     local plan_json
+    local actual_scope
     local creates
     local updates
     local deletes
+    local expected_scope
 
     plan_json="$(run_terraform show -json "${PLAN_FILE}")"
     creates="$(jq '[.resource_changes[]? | select(.change.actions == ["create"])] | length' <<<"${plan_json}")"
@@ -58,7 +64,70 @@ verify_create_plan() {
     if [[ "${creates}" != "4" || "${updates}" != "0" || "${deletes}" != "0" ]]; then
         lab_die "refusing plan: expected 4 creates, 0 updates, 0 deletes; got ${creates}/${updates}/${deletes}"
     fi
-    printf 'verified plan: 4 creates, 0 updates, 0 deletes\n'
+
+    [[ "${TF_VAR_vlan_id:-}" =~ ^[0-9]+$ ]] || lab_die "refusing plan: TF_VAR_vlan_id must be numeric"
+    [[ "${TF_VAR_network_prefix_length:-}" =~ ^[0-9]+$ ]] || lab_die "refusing plan: TF_VAR_network_prefix_length must be numeric"
+    jq -e 'length == 3 and (all(.[]; type == "number"))' <<<"${TF_VAR_node_vm_ids:-}" >/dev/null || \
+        lab_die "TF_VAR_node_vm_ids must contain three VM IDs"
+    jq -e 'length == 3 and (all(.[]; type == "string"))' <<<"${TF_VAR_node_ips:-}" >/dev/null || \
+        lab_die "TF_VAR_node_ips must contain three addresses"
+
+    expected_scope="$(jq -cn \
+        --arg storage_ip "${TF_VAR_storage_ip:-}" \
+        --argjson storage_vm_id "${TF_VAR_storage_vm_id:-null}" \
+        --argjson node_ips "${TF_VAR_node_ips:-null}" \
+        --argjson node_vm_ids "${TF_VAR_node_vm_ids:-null}" \
+        --arg gateway "${TF_VAR_gateway:-}" \
+        --arg bridge "${TF_VAR_network_bridge:-}" \
+        --argjson vlan_id "${TF_VAR_vlan_id:-null}" \
+        --arg prefix_length "${TF_VAR_network_prefix_length:-}" \
+        '[
+          {name:"node-a", vm_id:$node_vm_ids[0], address:($node_ips[0] + "/" + $prefix_length), gateway:$gateway, bridge:$bridge, vlan_id:$vlan_id},
+          {name:"node-b", vm_id:$node_vm_ids[1], address:($node_ips[1] + "/" + $prefix_length), gateway:$gateway, bridge:$bridge, vlan_id:$vlan_id},
+          {name:"node-c", vm_id:$node_vm_ids[2], address:($node_ips[2] + "/" + $prefix_length), gateway:$gateway, bridge:$bridge, vlan_id:$vlan_id},
+          {name:"storage", vm_id:$storage_vm_id, address:($storage_ip + "/" + $prefix_length), gateway:$gateway, bridge:$bridge, vlan_id:$vlan_id}
+        ] | sort_by(.name)')"
+    actual_scope="$(jq -c '
+        [.resource_changes[]
+          | select(.type == "proxmox_virtual_environment_vm" and .name == "lab")
+          | {
+              name: (.address | capture("\\[\\\"(?<name>[^\\\"]+)\\\"\\]").name),
+              vm_id: .change.after.vm_id,
+              address: .change.after.initialization[0].ip_config[0].ipv4[0].address,
+              gateway: .change.after.initialization[0].ip_config[0].ipv4[0].gateway,
+              bridge: .change.after.network_device[0].bridge,
+              vlan_id: .change.after.network_device[0].vlan_id
+            }
+        ] | sort_by(.name)' <<<"${plan_json}")"
+    [[ "${actual_scope}" == "${expected_scope}" ]] || lab_die "refusing plan: VM IDs or network scope differ from the approved lab variables"
+
+    local subnet_regex="^${VERSITYGW_LAB_SUBNET_PREFIX//./\\.}\\.([0-9]{1,3})$"
+    while IFS= read -r address; do
+        [[ "${address}" =~ ${subnet_regex} ]] || lab_die "refusing plan: address outside ${VERSITYGW_LAB_SUBNET_PREFIX}.0/24: ${address}"
+        (( BASH_REMATCH[1] >= 1 && BASH_REMATCH[1] <= 254 )) || lab_die "refusing plan: unusable lab address ${address}"
+    done < <(jq -r --arg prefix_length "${TF_VAR_network_prefix_length}" '.[].address | sub("/\($prefix_length)$"; "")' <<<"${actual_scope}")
+
+    printf 'verified plan: 4 creates, 0 updates, 0 deletes; %s/VLAN %s; addresses limited to %s.0/24\n' \
+        "${TF_VAR_network_bridge}" "${TF_VAR_vlan_id}" "${VERSITYGW_LAB_SUBNET_PREFIX}"
+}
+
+ensure_ssh_key() {
+    local key_directory="${LAB_LOCAL_DIR}/ssh"
+    local private_key="${key_directory}/id_ed25519"
+    local public_key="${private_key}.pub"
+
+    if [[ -f "${private_key}" && -f "${public_key}" ]]; then
+        return 0
+    fi
+    if [[ -e "${private_key}" || -e "${public_key}" ]]; then
+        lab_die "incomplete lab SSH key pair under ${key_directory}; preserve or repair it explicitly"
+    fi
+    lab_require_command ssh-keygen
+    mkdir -p "${key_directory}"
+    chmod 700 "${key_directory}"
+    ssh-keygen -q -t ed25519 -N "" -C "versitygw-dev-lab" -f "${private_key}"
+    chmod 600 "${private_key}"
+    chmod 644 "${public_key}"
 }
 
 main() {
@@ -88,6 +157,7 @@ main() {
             run_terraform validate
             ;;
         plan)
+            ensure_ssh_key
             require_runtime_configuration
             run_terraform init -input=false
             run_terraform plan -input=false -out="${PLAN_FILE}"

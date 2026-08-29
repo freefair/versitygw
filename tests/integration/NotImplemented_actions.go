@@ -95,57 +95,6 @@ func DeleteBucketAnalyticsConfiguration_not_implemented(s *S3Conf) error {
 	})
 }
 
-func PutBucketEncryption_not_implemented(s *S3Conf) error {
-	testName := "PutBucketEncryption_not_implemented"
-	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err := s3client.PutBucketEncryption(ctx,
-			&s3.PutBucketEncryptionInput{
-				Bucket: &bucket,
-				ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{
-					Rules: []types.ServerSideEncryptionRule{
-						{
-							ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{
-								SSEAlgorithm: types.ServerSideEncryptionAes256,
-							},
-						},
-					},
-				},
-			})
-		cancel()
-
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrNotImplemented))
-	})
-}
-
-func GetBucketEncryption_not_implemented(s *S3Conf) error {
-	testName := "GetBucketEncryption_not_implemented"
-	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err := s3client.GetBucketEncryption(ctx,
-			&s3.GetBucketEncryptionInput{
-				Bucket: &bucket,
-			})
-		cancel()
-
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrNotImplemented))
-	})
-}
-
-func DeleteBucketEncryption_not_implemented(s *S3Conf) error {
-	testName := "DeleteBucketEncryption_not_implemented"
-	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err := s3client.DeleteBucketEncryption(ctx,
-			&s3.DeleteBucketEncryptionInput{
-				Bucket: &bucket,
-			})
-		cancel()
-
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrNotImplemented))
-	})
-}
-
 func PutBucketIntelligentTieringConfiguration_not_implemented(s *S3Conf) error {
 	testName := "PutBucketIntelligentTieringConfiguration_not_implemented"
 	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
@@ -288,63 +237,6 @@ func DeleteBucketInventoryConfiguration_not_implemented(s *S3Conf) error {
 			&s3.DeleteBucketInventoryConfigurationInput{
 				Bucket: &bucket,
 				Id:     getPtr("unique_id"),
-			})
-		cancel()
-
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrNotImplemented))
-	})
-}
-
-func PutBucketLifecycleConfiguration_not_implemented(s *S3Conf) error {
-	testName := "PutBucketLifecycleConfiguration_not_implemented"
-	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err := s3client.PutBucketAnalyticsConfiguration(ctx,
-			&s3.PutBucketAnalyticsConfigurationInput{
-				Bucket: &bucket,
-				Id:     getPtr("unique_id"),
-				AnalyticsConfiguration: &types.AnalyticsConfiguration{
-					Id: getPtr("my-id"),
-					StorageClassAnalysis: &types.StorageClassAnalysis{
-						DataExport: &types.StorageClassAnalysisDataExport{
-							Destination: &types.AnalyticsExportDestination{
-								S3BucketDestination: &types.AnalyticsS3BucketDestination{
-									Bucket: &bucket,
-									Format: types.AnalyticsS3ExportFileFormatCsv,
-								},
-							},
-							OutputSchemaVersion: types.StorageClassAnalysisSchemaVersionV1,
-						},
-					},
-				},
-			})
-		cancel()
-
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrNotImplemented))
-	})
-}
-
-func GetBucketLifecycleConfiguration_not_implemented(s *S3Conf) error {
-	testName := "GetBucketLifecycleConfiguration_not_implemented"
-	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err := s3client.GetBucketLifecycleConfiguration(ctx,
-			&s3.GetBucketLifecycleConfigurationInput{
-				Bucket: &bucket,
-			})
-		cancel()
-
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrNotImplemented))
-	})
-}
-
-func DeleteBucketLifecycle_not_implemented(s *S3Conf) error {
-	testName := "DeleteBucketLifecycle_not_implemented"
-	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err := s3client.DeleteBucketLifecycle(ctx,
-			&s3.DeleteBucketLifecycleInput{
-				Bucket: &bucket,
 			})
 		cancel()
 
