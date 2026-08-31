@@ -6,6 +6,9 @@
 - [SSE-C transport security](#sse-c-transport-security)
 - [Rotation and recovery](#rotation-and-recovery)
 
+The same key ring and container format also encrypt the file-backed IAM stores
+at rest; see [IAM Store Encryption](iam-encryption.md).
+
 VersityGW validates Amazon S3 encryption requests at the S3 boundary and passes
 an explicit encryption intent to the selected backend. The backend owns the
 physical representation: POSIX, ScoutFS, and Azure use an authenticated
