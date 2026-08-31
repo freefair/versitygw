@@ -16,7 +16,13 @@ package gwcli
 
 import (
 	"github.com/urfave/cli/v2"
+
+	"github.com/versity/versitygw/internal/iamstore"
 )
+
+// IAMEncryption receives the "iam" command's IAM store encryption flags. The
+// hosting binary passes it into the IAM API server configuration.
+var IAMEncryption iamstore.ProtectorConfig
 
 // RunIAM starts the standalone IAM API server for the given command
 // context. The hosting binary's main package must set this before running
@@ -32,7 +38,7 @@ func IAMCommand() *cli.Command {
 		Action: func(ctx *cli.Context) error {
 			return RunIAM(ctx)
 		},
-		Flags: []cli.Flag{
+		Flags: append(iamEncryptionServerFlags(), []cli.Flag{
 			&cli.StringFlag{
 				Name:    "dir",
 				Usage:   "directory path for file-backed IAM storage",
@@ -139,6 +145,13 @@ func IAMCommand() *cli.Command {
 				Usage:   "octal file-mode permission for a file-backed unix-socket --private-ports address (e.g. '0660'); no effect on TCP or abstract-namespace sockets",
 				EnvVars: []string{"VGW_IAM_PRIVATE_SOCKET_PERM"},
 			},
-		},
+		}...),
 	}
+}
+
+// iamEncryptionServerFlags encrypts the file-backed IAM API database at rest.
+// The flag names carry no "iam-" prefix here because every flag of this
+// command is IAM-scoped already.
+func iamEncryptionServerFlags() []cli.Flag {
+	return IAMEncryptionFlags("", &IAMEncryption)
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/versity/versitygw/cumiddleware"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/embedgw"
+	"github.com/versity/versitygw/internal/iamstore"
 	"github.com/versity/versitygw/internal/netutil"
 	"github.com/versity/versitygw/rdma"
 	"github.com/versity/versitygw/s3api"
@@ -61,6 +62,7 @@ var (
 	quiet                                  bool
 	readonly                               bool
 	iamDir                                 string
+	iamEncryption                          iamstore.ProtectorConfig
 	ldapURL, ldapBindDN, ldapPassword      string
 	ldapQueryBase, ldapObjClasses          string
 	ldapAccessAtr, ldapSecAtr, ldapRoleAtr string
@@ -218,7 +220,7 @@ documentation can be found in the GitHub wiki.`,
 }
 
 func initFlags() []cli.Flag {
-	return []cli.Flag{
+	flags := []cli.Flag{
 		&cli.BoolFlag{
 			Name:    "version",
 			Usage:   "list versitygw version",
@@ -896,6 +898,11 @@ func initFlags() []cli.Flag {
 			Destination: &socketPerm,
 		},
 	}
+
+	// The internal IAM store keeps S3 secret keys, which SigV4 needs in
+	// plaintext at request time. Encrypting the file at rest is the only
+	// protection available for them beyond file permissions.
+	return append(flags, gwcli.IAMEncryptionFlags("iam-", &iamEncryption)...)
 }
 
 // debugLogLevel translates the --debug flag into a debuglogger.Level.
@@ -996,6 +1003,12 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		HealthPath:                  healthPath,
 		SocketPerm:                  socketPerm,
 		IAMDir:                      iamDir,
+		IAMEncryptionKeyDirectory:   iamEncryption.KeyDirectory,
+		IAMEncryptionActiveKey:      iamEncryption.ActiveKey,
+		IAMEncryptionKMSProvider:    iamEncryption.KMSProvider,
+		IAMEncryptionKMSKeyID:       iamEncryption.KMSKeyID,
+		IAMEncryptionKMSTimeout:     iamEncryption.KMSTimeout,
+		IAMEncryptionRequired:       iamEncryption.RequireEncryption,
 		LDAPServerURL:               ldapURL,
 		LDAPBindDN:                  ldapBindDN,
 		LDAPPassword:                ldapPassword,
