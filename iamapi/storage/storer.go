@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/versity/versitygw/iamapi/types"
+	"github.com/versity/versitygw/internal/iamstore"
 )
 
 // Storer is the IAM API storage backend contract.
@@ -88,6 +89,9 @@ type Storer interface {
 type Config struct {
 	Dir   string
 	Vault VaultConfig
+	// StoreOptions selects how the file-backed store represents IAM data on
+	// disk. The zero value keeps the plaintext format.
+	StoreOptions iamstore.Options
 }
 
 func New(cfg Config) (Storer, error) {
@@ -112,7 +116,7 @@ func New(cfg Config) (Storer, error) {
 
 	switch {
 	case dir != "":
-		store, err := NewInternal(dir)
+		store, err := NewInternalWithOptions(dir, cfg.StoreOptions)
 		if err != nil {
 			return nil, fmt.Errorf("init internal IAM storer: %w", err)
 		}

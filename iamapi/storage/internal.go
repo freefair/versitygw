@@ -41,8 +41,16 @@ type InternalStore struct {
 
 var _ Storer = (*InternalStore)(nil)
 
+// NewInternal creates the file-backed IAM API store, keeping IAM data in
+// plaintext.
 func NewInternal(dir string) (Storer, error) {
-	engine, err := iamstore.New(dir, iamFile, iamBackupFile, defaultIAMConfig(), normalizeIAMConfig)
+	return NewInternalWithOptions(dir, iamstore.Options{})
+}
+
+// NewInternalWithOptions creates the file-backed IAM API store with an
+// explicit storage representation, so the IAM file can be encrypted at rest.
+func NewInternalWithOptions(dir string, opts iamstore.Options) (Storer, error) {
+	engine, err := iamstore.NewWithOptions(dir, iamFile, iamBackupFile, defaultIAMConfig(), normalizeIAMConfig, opts)
 	if err != nil {
 		return nil, err
 	}

@@ -38,6 +38,7 @@ import (
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/internal/iamstore"
 	"github.com/versity/versitygw/internal/lifecycle"
 	"github.com/versity/versitygw/internal/netutil"
 	"github.com/versity/versitygw/metrics"
@@ -194,9 +195,26 @@ type Config struct {
 
 	// IAMDir enables the local file-based IAM backend. Set to the directory
 	// path where account files are stored. Account data is plain text
-	// protected only by filesystem permissions; suitable for development but
-	// not recommended for production deployments.
+	// protected only by filesystem permissions unless IAMEncryption is
+	// configured.
 	IAMDir string
+
+	// IAMEncryptionKeyDirectory encrypts the IAMDir account file at rest,
+	// wrapping its data key with a protected local key from this directory.
+	// Empty keeps the historical plaintext format.
+	IAMEncryptionKeyDirectory string
+	// IAMEncryptionActiveKey selects the local wrapping key ID to write
+	// with. Empty uses the key directory's active reference.
+	IAMEncryptionActiveKey string
+	// IAMEncryptionKMSProvider selects "local" (default) or "aws".
+	IAMEncryptionKMSProvider string
+	// IAMEncryptionKMSKeyID names the AWS KMS key or alias. Required for
+	// the aws provider.
+	IAMEncryptionKMSKeyID string
+	// IAMEncryptionKMSTimeout bounds a single AWS KMS call.
+	IAMEncryptionKMSTimeout time.Duration
+	// IAMEncryptionRequired refuses to start against a plaintext store.
+	IAMEncryptionRequired bool
 
 	// LDAP IAM backend. Activated when LDAPServerURL is non-empty.
 
@@ -716,6 +734,18 @@ func RunVersityGW(ctx context.Context, be backend.Backend, cfg *Config) error {
 		debuglogger.SetIAMDebugEnabled()
 	}
 
+	storeOptions, err := iamStoreOptions(ctx, iamstore.ProtectorConfig{
+		KeyDirectory:      cfg.IAMEncryptionKeyDirectory,
+		ActiveKey:         cfg.IAMEncryptionActiveKey,
+		KMSProvider:       cfg.IAMEncryptionKMSProvider,
+		KMSKeyID:          cfg.IAMEncryptionKMSKeyID,
+		KMSTimeout:        cfg.IAMEncryptionKMSTimeout,
+		RequireEncryption: cfg.IAMEncryptionRequired,
+	}, cfg.IAMDir != "")
+	if err != nil {
+		return fmt.Errorf("configure iam encryption: %w", err)
+	}
+
 	iam, err := auth.New(&auth.Opts{
 		RootAccount: auth.Account{
 			Access: cfg.RootUserAccess,
@@ -723,6 +753,7 @@ func RunVersityGW(ctx context.Context, be backend.Backend, cfg *Config) error {
 			Role:   auth.RoleAdmin,
 		},
 		Dir:                         cfg.IAMDir,
+		StoreOptions:                storeOptions,
 		LDAPServerURL:               cfg.LDAPServerURL,
 		LDAPBindDN:                  cfg.LDAPBindDN,
 		LDAPPassword:                cfg.LDAPPassword,
@@ -1841,4 +1872,19 @@ func validatePortConflicts(ports, admPorts, webuiPorts, websitePorts []string) e
 	}
 
 	return nil
+}
+
+// iamStoreOptions turns IAM encryption settings into store options. Only the
+// file-backed IAM store can honor them, so configuring them for LDAP, Vault,
+// FreeIPA, or the S3-hosted IAM object is refused rather than accepted as a
+// false assurance.
+func iamStoreOptions(ctx context.Context, cfg iamstore.ProtectorConfig, fileBacked bool) (iamstore.Options, error) {
+	if !fileBacked {
+		if cfg.Enabled() || cfg.RequireEncryption {
+			return iamstore.Options{}, fmt.Errorf("iam encryption applies to the file-backed IAM store only")
+		}
+		return iamstore.Options{}, nil
+	}
+
+	return cfg.Options(ctx)
 }

@@ -48,9 +48,16 @@ type iAMConfig struct {
 
 var _ IAMService = &IAMServiceInternal{}
 
-// NewInternal creates a new instance for the Internal IAM service
+// NewInternal creates a new instance for the Internal IAM service, storing
+// accounts in plaintext.
 func NewInternal(rootAcc Account, dir string) (*IAMServiceInternal, error) {
-	engine, err := iamstore.New(dir, iamFile, iamBackupFile, defaultIAMConfig(), normalizeIAMConfig)
+	return NewInternalWithOptions(rootAcc, dir, iamstore.Options{})
+}
+
+// NewInternalWithOptions creates the Internal IAM service with an explicit
+// storage representation, so the account file can be encrypted at rest.
+func NewInternalWithOptions(rootAcc Account, dir string, opts iamstore.Options) (*IAMServiceInternal, error) {
+	engine, err := iamstore.NewWithOptions(dir, iamFile, iamBackupFile, defaultIAMConfig(), normalizeIAMConfig, opts)
 	if err != nil {
 		return nil, fmt.Errorf("init iam: %w", err)
 	}

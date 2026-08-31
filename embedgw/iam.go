@@ -23,11 +23,13 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/iamapi"
 	"github.com/versity/versitygw/iamapi/private"
 	"github.com/versity/versitygw/iamapi/storage"
+	"github.com/versity/versitygw/internal/iamstore"
 	"github.com/versity/versitygw/internal/netutil"
 	"github.com/versity/versitygw/webui"
 )
@@ -106,6 +108,23 @@ type IAMConfig struct {
 	// IAMDir enables local file-backed IAM API storage. Set to the directory
 	// path where the IAM API user database is stored.
 	IAMDir string
+
+	// IAMEncryptionKeyDirectory encrypts the IAMDir user database at rest,
+	// wrapping its data key with a protected local key from this directory.
+	// Empty keeps the historical plaintext format.
+	IAMEncryptionKeyDirectory string
+	// IAMEncryptionActiveKey selects the local wrapping key ID to write
+	// with. Empty uses the key directory's active reference.
+	IAMEncryptionActiveKey string
+	// IAMEncryptionKMSProvider selects "local" (default) or "aws".
+	IAMEncryptionKMSProvider string
+	// IAMEncryptionKMSKeyID names the AWS KMS key or alias. Required for
+	// the aws provider.
+	IAMEncryptionKMSKeyID string
+	// IAMEncryptionKMSTimeout bounds a single AWS KMS call.
+	IAMEncryptionKMSTimeout time.Duration
+	// IAMEncryptionRequired refuses to start against a plaintext store.
+	IAMEncryptionRequired bool
 
 	// VaultEndpointURL enables Vault-backed IAM API storage.
 	VaultEndpointURL string
@@ -383,8 +402,21 @@ func RunIAMAPI(ctx context.Context, cfg *IAMConfig) error {
 		return fmt.Errorf("root secret key is required for IAM API authentication")
 	}
 
+	storeOptions, err := iamStoreOptions(ctx, iamstore.ProtectorConfig{
+		KeyDirectory:      cfg.IAMEncryptionKeyDirectory,
+		ActiveKey:         cfg.IAMEncryptionActiveKey,
+		KMSProvider:       cfg.IAMEncryptionKMSProvider,
+		KMSKeyID:          cfg.IAMEncryptionKMSKeyID,
+		KMSTimeout:        cfg.IAMEncryptionKMSTimeout,
+		RequireEncryption: cfg.IAMEncryptionRequired,
+	}, cfg.IAMDir != "")
+	if err != nil {
+		return fmt.Errorf("configure iam encryption: %w", err)
+	}
+
 	store, err := storage.New(storage.Config{
-		Dir: cfg.IAMDir,
+		Dir:          cfg.IAMDir,
+		StoreOptions: storeOptions,
 		Vault: storage.VaultConfig{
 			EndpointURL:            cfg.VaultEndpointURL,
 			Namespace:              cfg.VaultNamespace,

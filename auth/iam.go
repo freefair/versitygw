@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/versity/versitygw/internal/iamstore"
 	"github.com/versity/versitygw/s3err"
 )
 
@@ -212,6 +213,10 @@ type Opts struct {
 	StandaloneDefaultUserID     int
 	StandaloneDefaultGroupID    int
 	StandaloneDefaultProjectID  int
+
+	// StoreOptions selects how the internal (Dir) IAM service represents
+	// accounts on disk. The zero value keeps the plaintext format.
+	StoreOptions iamstore.Options
 }
 
 func New(o *Opts) (IAMService, error) {
@@ -245,7 +250,7 @@ func New(o *Opts) (IAMService, error) {
 		// TODO: Do we need to implement cache for this ?
 		return svc, nil
 	case o.Dir != "":
-		svc, err = NewInternal(o.RootAccount, o.Dir)
+		svc, err = NewInternalWithOptions(o.RootAccount, o.Dir, o.StoreOptions)
 		fmt.Printf("initializing internal IAM with %q\n", o.Dir)
 	case o.LDAPServerURL != "":
 		svc, err = NewLDAPService(o.RootAccount, o.LDAPServerURL, o.LDAPBindDN, o.LDAPPassword,
