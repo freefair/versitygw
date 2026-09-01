@@ -170,8 +170,11 @@ configuration serves all three.
 tampered container, format detection, the plaintext-preserving write, the
 strict mode, an encrypted store without a key, cache reuse and expiry versus a
 foreign write, caller mutation of returned bytes, the CLI conversions including
-the backup file, and the provider-configuration validation. `embedgw` covers
-the backend gating and the flat-field mapping.
+the backup file, and the provider-configuration validation. A fake KMS client
+covers the AWS path end to end — container mode, encryption-context binding,
+and one provider call per store version rather than per read — and a
+concurrency test exercises many readers against a writer under `-race`.
+`embedgw` covers the backend gating and the flat-field mapping.
 
 End to end, `versitygw test gw-iam` and `versitygw test iam` run against
 encrypted stores.

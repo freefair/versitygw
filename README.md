@@ -69,9 +69,11 @@ Implementation references for the Lifecycle and Encryption work in this reposito
 
 - [S3 Lifecycle operation guide](docs/s3-lifecycle.md)
 - [S3 server-side encryption operation guide](docs/s3-encryption.md)
+- [IAM store encryption operation guide](docs/iam-encryption.md)
 - [Lifecycle and Encryption inventory](docs/impl/s3-lifecycle-encryption-inventory.md)
 - [Amazon S3-compatible Lifecycle implementation plan](docs/impl/s3-lifecycle.md)
 - [Amazon S3-compatible Encryption implementation plan](docs/impl/s3-encryption.md)
+- [IAM store encryption implementation](docs/impl/iam-store-encryption.md)
 - [Temporary NFS and ScoutFS verification lab](tests/lab/README.md)
 
 ### Need help?
@@ -99,7 +101,7 @@ See the [Quickstart](https://github.com/versity/versitygw/wiki/Quickstart) docum
 mkdir /tmp/vgw /tmp/vers
 ROOT_ACCESS_KEY="testuser" ROOT_SECRET_KEY="secret" ./versitygw --port :10000 --iam-dir /tmp/vgw posix --versioning-dir /tmp/vers /tmp/vgw
 ```
-This will enable an S3 server on the current host listening on port 10000 and hosting the directory `/tmp/vgw` with older object versions in `/tmp/vers`. It's fine if both of these directories are within the same filesystem. The `--iam-dir` option enables simple JSON flat file accounts for testing.
+This will enable an S3 server on the current host listening on port 10000 and hosting the directory `/tmp/vgw` with older object versions in `/tmp/vers`. It's fine if both of these directories are within the same filesystem. The `--iam-dir` option enables simple JSON flat file accounts for testing. Those accounts hold S3 secret keys in plaintext unless the store is encrypted at rest; see the [IAM store encryption operation guide](docs/iam-encryption.md).
 
 To get the usage output, run the following:
 
